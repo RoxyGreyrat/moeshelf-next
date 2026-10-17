@@ -51,11 +51,6 @@ export function updateGame(
   return invoke<Game>("update_game", { id, patch, lock });
 }
 
-/** 插入 4 条演示数据，返回插入后的总行数（重复调用不会重复插入） */
-export function addDummyGame(): Promise<number> {
-  return invoke<number>("add_dummy_game");
-}
-
 /** 旧库默认位置（MoeShelf 2.1.0 活库，与 Rust 侧 DEFAULT_LEGACY_DIR 保持一致） */
 export const DEFAULT_LEGACY_DIR = String.raw`E:\moeshelf\moeshelf-build-2.1.0\data`;
 

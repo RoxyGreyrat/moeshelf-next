@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bug, ChevronDown, DatabaseZap, Loader2 } from "lucide-react";
+import { Bug, ChevronDown, Loader2 } from "lucide-react";
 import type { GridState, SelectMode } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -13,9 +13,6 @@ interface StateSwitcherProps {
   onEditingChange: (v: boolean) => void;
   onToastSuccess: () => void;
   onToastError: () => void;
-  /** 触发旧库迁移（B2 临时入口，接完真实数据后删掉） */
-  onMigrate: () => void;
-  migrating: boolean;
 }
 
 function Seg({
@@ -66,8 +63,6 @@ export function StateSwitcher({
   onEditingChange,
   onToastSuccess,
   onToastError,
-  onMigrate,
-  migrating,
 }: StateSwitcherProps) {
   const [open, setOpen] = useState(true);
 
@@ -150,26 +145,6 @@ export function StateSwitcher({
             加载
           </Button>
         </div>
-      </div>
-
-      <div className="space-y-1">
-        <p className="text-[10px] font-medium tracking-[0.06em] text-muted-foreground">
-          数据
-        </p>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={migrating}
-          onClick={onMigrate}
-          className="h-7 w-full gap-1 px-2 text-[11px]"
-        >
-          {migrating ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <DatabaseZap className="size-3" />
-          )}
-          {migrating ? "迁移中…" : "迁移旧库（一次性）"}
-        </Button>
       </div>
 
       <div className="space-y-1">

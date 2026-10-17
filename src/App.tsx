@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import {
-  addDummyGame,
-  DEFAULT_LEGACY_DIR,
-  listGames,
-  migrateLegacy,
-  updateGame,
-} from "@/lib/api";
+import { listGames, updateGame } from "@/lib/api";
 import type {
   Filters,
   Game,
@@ -51,7 +45,6 @@ export default function App() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [migrating, setMigrating] = useState(false);
   const [columns, setColumns] = useState(4);
 
   // 切视图会重建几十个卡片子树：走并发更新，让浏览器先响应点击再提交列表
@@ -178,46 +171,6 @@ export default function App() {
       description: "在 E:\\galgame 下发现 12 部游戏，其中 3 部引擎未识别。",
     });
   }, []);
-
-  /** 往 SQLite 里塞 4 条演示数据，然后重新读一遍（验证前端 → Rust → DB 整条链路） */
-  const handleSeed = useCallback(async () => {
-    try {
-      const total = await addDummyGame();
-      const rows = await reload();
-      if (rows.length > 0) {
-        setGridState("normal");
-      }
-      toast.success("测试数据已写入 SQLite", {
-        description: `表内共 ${total} 条，界面读到 ${rows.length} 条`,
-      });
-    } catch (err) {
-      console.error("[add_dummy_game]", err);
-      toast.error("写入测试数据失败", { description: String(err) });
-    }
-  }, [reload]);
-
-  /** 旧库一次性迁移（临时入口，接完真实数据后连按钮一起删） */
-  const handleMigrate = useCallback(async () => {
-    setMigrating(true);
-    try {
-      const report = await migrateLegacy(DEFAULT_LEGACY_DIR);
-      const rows = await reload();
-      toast.success(`迁移完成：导入 ${report.imported} 部`, {
-        description:
-          `扫描 ${report.gamesScanned} · 跳过夹具 ${report.skippedFixture} · ` +
-          `有元数据 ${report.withMetadata} · 人工覆盖 ${report.overridesApplied} 处 · ` +
-          `时长 ${report.playtimeImported} 条 · 界面读到 ${rows.length} 部`,
-      });
-      if (report.warnings.length > 0) {
-        toast(report.warnings.join("；"));
-      }
-    } catch (err) {
-      console.error("[migrate_legacy]", err);
-      toast.error("迁移失败", { description: String(err) });
-    } finally {
-      setMigrating(false);
-    }
-  }, [reload]);
 
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
@@ -454,7 +407,6 @@ export default function App() {
                 onSelect={handleSelect}
                 onOpen={handleOpen}
                 onScan={handleScan}
-                onSeed={handleSeed}
                 onRetry={() => setGridState("normal")}
                 onClearFilters={clearFilters}
                 onColumnsChange={setColumns}
@@ -489,8 +441,6 @@ export default function App() {
           onToastError={() =>
             toast.error("刮削失败", { description: "请求超时，请检查代理设置后重试。" })
           }
-          onMigrate={handleMigrate}
-          migrating={migrating}
         />
 
         <Toaster position="top-center" />

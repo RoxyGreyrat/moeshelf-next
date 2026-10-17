@@ -5,7 +5,7 @@
 
 use crate::models::{Game, GamePatch, GAME_COLUMNS};
 use rusqlite::types::Value;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<Game>> {
     let sql = format!(
@@ -172,7 +172,7 @@ pub fn update_game(
         .ok_or_else(|| format!("更新后读不回来（id={id}）"))
 }
 
-/// 演示数据用的固定 id（与 insert_demo_games 里一致）。
+/// 演示数据用的固定 id（`insert_demo_games` 里用的就是它们）。
 /// 迁移前必须先清掉它们，否则真实库里会混进 4 条假游戏。
 pub const DEMO_IDS: [&str; 4] = ["a1b2c3d4", "9c874865", "3f0d5a71", "b1e9f420"];
 
@@ -183,13 +183,20 @@ pub fn purge_demo_games(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(&sql, rusqlite::params_from_iter(DEMO_IDS.iter()))
 }
 
+/// 全表行数。仅供测试断言使用。
+#[cfg(test)]
 pub fn count_all(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0))
 }
 
 /// 写入 4 条演示数据（INSERT OR IGNORE：重复调用不会重复插入）。
-/// 返回写入后的总行数。
+///
+/// **只在测试里用**：B1 联调时它由界面上的临时按钮驱动，B3 打通真实数据后
+/// 命令与按钮都已删除，现在它只是测试夹具（构造一批已知行）。
+#[cfg(test)]
 pub fn insert_demo_games(conn: &Connection) -> rusqlite::Result<i64> {
+    use rusqlite::params;
+
     // (id/path_hash, 英文名, 中文名, 原名, 会社, 发售日, 引擎, 平台, 标签, 评分, 评分源, 主程序, 目录, 文件数, 已通关)
     #[allow(clippy::type_complexity)]
     let rows: [(&str, &str, &str, &str, &str, &str, &str, &str, &str, f64, &str, &str, &str, i64, i64); 4] = [
