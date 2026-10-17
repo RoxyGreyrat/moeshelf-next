@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import { listGames, onScanProgress, pickFolder, scanDirectory, updateGame } from "@/lib/api";
+import {
+  deleteGames,
+  listGames,
+  onScanProgress,
+  pickFolder,
+  scanDirectory,
+  setGamesIgnored,
+  updateGame,
+} from "@/lib/api";
 import type { ScanProgress } from "@/lib/api";
 import type {
   Filters,
@@ -18,6 +26,8 @@ import { FilterSidebar } from "@/components/layout/FilterSidebar";
 import { ScanStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
+import { DeleteGamesDialog } from "@/components/detail/DeleteGamesDialog";
+import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -52,6 +62,11 @@ export default function App() {
   // 扫描：scanning 只控制顶栏按钮状态，scanProgress 是 Rust 每 100ms 推过来的最新进度
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+
+  // 设置面板 / 删除确认（删除是个不可撤销的动作，必须二次确认）
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Game[]>([]);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // 切视图会重建几十个卡片子树：走并发更新，让浏览器先响应点击再提交列表
   const [, startTransition] = useTransition();
@@ -222,6 +237,68 @@ export default function App() {
     }
   }, [reload, scanning]);
 
+  /* ------------------------------------------------------ 忽略 / 删除（库维护） */
+
+  /** 当前作用对象：多选是选中的全部，单选就是详情里那一部 */
+  const targetIds = useCallback(() => {
+    if (selectMode === "multi" && selectedIds.length > 0) return selectedIds;
+    return activeGame ? [activeGame.id] : [];
+  }, [activeGame, selectMode, selectedIds]);
+
+  /** 从本地列表摘掉若干条并把选中/编辑态收干净。不整表重拉 —— 摘掉一条没必要刷新 211 条 */
+  const dropLocally = useCallback((ids: string[]) => {
+    setGames((prev) => prev.filter((g) => !ids.includes(g.id)));
+    setSelectedIds([]);
+    setCursorId(null);
+    setEditing(false);
+  }, []);
+
+  /** 忽略：行还在库里（ignored=1），只是书架不再显示，设置里能恢复 */
+  const handleIgnore = useCallback(async () => {
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    const name = activeGame?.titleCn ?? "";
+
+    try {
+      const n = await setGamesIgnored(ids, true);
+      dropLocally(ids);
+      toast.success(ids.length > 1 ? `已忽略 ${n} 部` : `已忽略《${name}》`, {
+        description: "在右上角「设置 → 已忽略」里可以恢复。",
+      });
+    } catch (err) {
+      console.error("[set_games_ignored]", err);
+      toast.error("忽略失败", { description: String(err) });
+    }
+  }, [activeGame, dropLocally, targetIds]);
+
+  const handleDeleteRequest = useCallback(() => {
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    setDeleteTarget(games.filter((g) => ids.includes(g.id)));
+  }, [games, targetIds]);
+
+  /** 删除：确认后从库里删记录（连带游玩记录），硬盘文件不动 */
+  const handleDeleteConfirm = useCallback(async () => {
+    const ids = deleteTarget.map((g) => g.id);
+    if (ids.length === 0) return;
+
+    setDeleteBusy(true);
+    try {
+      const n = await deleteGames(ids);
+      dropLocally(ids);
+      setDeleteTarget([]);
+      toast.success(`已从书架删除 ${n} 部`, {
+        description: "硬盘上的游戏文件没有动；重新扫描这个目录它会再出现。",
+      });
+    } catch (err) {
+      console.error("[delete_games]", err);
+      // 失败就保持弹窗开着，让用户能重试
+      toast.error("删除失败", { description: String(err) });
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteTarget, dropLocally]);
+
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
     toast.success(`已打开《${activeGame.titleCn}》的补丁目录`, {
@@ -391,11 +468,7 @@ export default function App() {
           onViewChange={(v) => startTransition(() => setView(v))}
           onScan={handleScan}
           scanning={scanning}
-          onOpenSettings={() =>
-            toast("设置面板将在 B 阶段接入", {
-              description: "扫描根目录、代理、刮削源等配置。",
-            })
-          }
+          onOpenSettings={() => setSettingsOpen(true)}
           searchRef={searchRef}
         />
 
@@ -481,8 +554,26 @@ export default function App() {
             onSave={handleSave}
             onPlay={handlePlay}
             onPatch={handlePatch}
+            onIgnore={handleIgnore}
+            onDelete={handleDeleteRequest}
           />
         </div>
+
+        <SettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          onRestored={() => void reload()}
+        />
+
+        <DeleteGamesDialog
+          open={deleteTarget.length > 0}
+          games={deleteTarget}
+          busy={deleteBusy}
+          onOpenChange={(next) => {
+            if (!next) setDeleteTarget([]);
+          }}
+          onConfirm={handleDeleteConfirm}
+        />
 
         <StateSwitcher
           gridState={gridState}

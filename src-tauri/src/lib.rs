@@ -60,6 +60,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::update_game,
+            commands::list_ignored_games,
+            commands::set_games_ignored,
+            commands::delete_games,
             commands::pick_folder,
             commands::scan_directory,
             commands::migrate_legacy

@@ -10,7 +10,8 @@
 
 **C 阶段已收口**：211 部真实数据在 SQLite 里、封面走 `cover://` 直读旧缓存（211/211 命中）、
 编辑保存真落库并锁定字段、211 部下切视图 4 帧 → 46 帧；目录扫描器（Rust 规则引擎）与
-**前端完整接线**（选目录 → 实时进度 → 写库 → 刷新列表 → 报「新增/更新」）都已跑通。
+**前端完整接线**（选目录 → 实时进度 → 写库 → 刷新列表 → 报「新增/更新」）都已跑通；
+扫描收进来的工具目录可以**逐个忽略**（设置里能恢复）或**删除记录**。
 **离"能日常用"只差：启动器（启动游戏 + 计时）、补丁管理。**
 
 - 项目路径：`E:\deskbox\galgame-manager`
@@ -169,6 +170,9 @@ galgame-manager/
 ```rust
 list_games()                     -> Vec<Game>    // 按 first_seen_at DESC 排序，过滤 ignored=1
 update_game(id, patch, lock)     -> Game         // 增量补丁 + 锁定字段，返回整行
+list_ignored_games()             -> Vec<Game>    // 忽略清单（设置里显示，可恢复）
+set_games_ignored(ids, ignored)  -> usize        // 忽略 / 取消忽略，整批一个事务
+delete_games(ids)                -> usize        // 删记录 + 连带 playtime/会话/来源
 pick_folder(title?)              -> Option<String> // 原生选目录，取消返回 null
 scan_directory(root)             -> ScanReport   // 扫描 + 写库，过程发 scan-progress 事件
 migrate_legacy(legacy_dir?)      -> MigrateReport // 运维兜底，界面无入口
@@ -435,7 +439,7 @@ update_game(id, patch, lock)     -> Game         // ✅ 已实现
 
 1. 18 条新增里约 6 条是工具目录：`GARbro`、`GARbro-Mod-1.0.1.2.0`、`FreeMoteToolkit`、
    `lz4_win32_v1_9_3`、`Zcode`。它们本身带 `.xp3`/数据文件，规则上"像游戏"。
-   → 解法：用 `scan_roots.ignore_paths`（表里已建好）做用户级忽略清单，或加"工具名黑名单"。
+   → **现在可以手动忽略**（详情面板底部「忽略」，见 7.6.1）；自动识别工具目录仍未做。
 2. 容器布局取舍：`PureConnectFullHD\PURExCONNECT\game.exe` 这种，
    旧库把**父目录**当游戏，新扫描器把**子目录**当游戏 → 重扫会多出一条。
    当前选择保留子目录（更符合真实作品名），代价是少量重复。
@@ -467,10 +471,31 @@ UI 流程（按钮 → 进度 → Toast → 刷新）用无头 Edge + 假 `__TAU
 脚本在 `E:\deskbox\.workbuddy\tmp\pw\qa-scan.js`、`qa-real-scan.js`。
 
 **C 阶段还没做的**（按优先级）：
-1. **忽略清单**：扫 `E:\galgame` 会把 `GARbro` / `FreeMoteToolkit` / `Zcode` 这类工具目录收成游戏（约 6 条）。
-   表 `scan_roots` 已建好 `ignore_paths` 列，缺的是「右键忽略 / 在设置里管理」的 UI。
-2. **取消扫描**：现在点开始就只能等（`E:\galgame` 实测 90~105 秒）。Rust 侧需要一个 `AtomicBool` 取消标志。
-3. **扫描根目录记忆**：`scan_roots` 表还是空的，每次都要手选目录。
+1. **取消扫描**：现在点开始就只能等（`E:\galgame` 实测 90~105 秒）。Rust 侧需要一个 `AtomicBool` 取消标志。
+2. **扫描根目录记忆**：`scan_roots` 表还是空的，每次都要手选目录。
+
+### 7.6.1 忽略 / 删除（同日完成）
+
+入口在**详情面板底部那行**：`忽略`（左）/ `删除`（右），多选时文案变成「忽略这 N 部」。
+
+| 动作 | 语义 | 后端 |
+|---|---|---|
+| 忽略 | `games.ignored = 1`，书架过滤掉，**行还在**；重扫不会把它放出来（`upsert_scanned` 不碰 ignored） | `set_games_ignored(ids, true)` |
+| 删除 | 真删行 + 连带 `playtime` / `playtime_sessions` / `game_sources`。**不动硬盘文件、不删封面缓存** | `delete_games(ids)` |
+| 恢复 | 设置 → 已忽略 → 「恢复」 | `set_games_ignored([id], false)` |
+
+- 删除必须二次确认，确认文案里写明「不动硬盘文件、重扫会回来、只是不想看见请用忽略」
+- 两个动作都是**整批一个事务**，不会出现"删了一半"
+- 设置面板 `components/settings/SettingsDialog.tsx`，目前只有「已忽略」一块
+
+**实测（真机、真 IPC、真库，用一条合成行 `deadbeef` 走完整流程）**
+
+```
+初始 212（211 真实 + 1 条测试）
+忽略 → 211，卡片消失，忽略清单 ['deadbeef']
+设置 → 1 条，含测试条目 → 恢复 → 212，卡片回来
+删除 → 确认弹窗「从书架删除这一部？」→ 删除 → 211，库里查不到该行，忽略清单 0 条
+```
 
 ### 7.7 下一步：D 阶段（启动器 + 补丁管理）建议顺序
 

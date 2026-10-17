@@ -33,8 +33,43 @@ pub fn update_game(
     repo::update_game(&conn, &id, &patch, lock)
 }
 
-/// 从旧库一次性迁移（旧库只读，全部 INSERT OR REPLACE，可重跑）
+/// 列出被忽略的条目（「设置 → 已忽略」里显示，可以恢复）。
+#[tauri::command]
+pub fn list_ignored_games(db: State<'_, Db>) -> Result<Vec<Game>, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::list_ignored(&conn).map_err(db_err)
+}
+
+/// 忽略 / 取消忽略若干条。返回真正改动的行数。
 ///
+/// 整批包在一个事务里：要么全忽略，要么一条都不动，不会出现"忽略了一半"。
+#[tauri::command]
+pub fn set_games_ignored(
+    db: State<'_, Db>,
+    ids: Vec<String>,
+    ignored: bool,
+) -> Result<usize, String> {
+    let mut conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let tx = conn.transaction().map_err(db_err)?;
+    let changed = repo::set_ignored(&tx, &ids, ignored).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(changed)
+}
+
+/// 从库里彻底删除若干条（连带 playtime / 会话 / 来源记录）。
+///
+/// ⚠️ 只删数据库：不删硬盘上的游戏目录，也不删封面缓存。
+/// 删完再扫同一个目录，它会作为"新游戏"回来 —— 界面上必须如实告诉用户。
+#[tauri::command]
+pub fn delete_games(db: State<'_, Db>, ids: Vec<String>) -> Result<usize, String> {
+    let mut conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let tx = conn.transaction().map_err(db_err)?;
+    let deleted = repo::delete_games(&tx, &ids).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(deleted)
+}
+
+/// 从旧库一次性迁移（旧库只读，全部 INSERT OR REPLACE，可重跑）///
 /// 界面上已经没有入口了（B2 完成后不再需要），命令保留作为运维兜底：
 /// 换机器 / 数据损坏时可以临时加个按钮，或直接跑
 /// `cargo test migrate_into_dev_db -- --ignored`。

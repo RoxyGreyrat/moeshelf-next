@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  EyeOff,
   Loader2,
   Lock,
   MousePointerClick,
@@ -8,6 +9,7 @@ import {
   Puzzle,
   Save,
   Star,
+  Trash2,
   X,
 } from "lucide-react";
 import type { Engine, Game, Platform } from "@/types/game";
@@ -41,6 +43,10 @@ interface DetailPanelProps {
   onSave: (patch: Partial<Game>) => void;
   onPlay: () => void;
   onPatch: () => void;
+  /** 忽略：只是从书架上藏起来，设置里能恢复 */
+  onIgnore: () => void;
+  /** 删除：二次确认后从库里删掉记录 */
+  onDelete: () => void;
 }
 
 function FieldRow({
@@ -129,6 +135,8 @@ export function DetailPanel({
   onSave,
   onPlay,
   onPatch,
+  onIgnore,
+  onDelete,
 }: DetailPanelProps) {
   const [draft, setDraft] = useState<Draft | null>(null);
 
@@ -444,6 +452,32 @@ export function DetailPanel({
             </Button>
           </>
         )}
+
+        {/* 忽略 / 删除：低对比度的文字按钮，不放主按钮行 —— 这不是常用动作，
+            但扫描把工具目录收进来时必须一眼能找到。多选时作用于选中的全部。 */}
+        {!editing && (
+          <div className="flex items-center justify-between border-t border-border pt-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onIgnore}
+              className="h-7 gap-1 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+            >
+              <EyeOff className="size-3.5" />
+              忽略{multi ? `这 ${multiCount} 部` : ""}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDelete}
+              className="h-7 gap-1 px-2 text-[11.5px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+              删除{multi ? `这 ${multiCount} 部` : ""}
+            </Button>
+          </div>
+        )}
+
         <p className="pt-0.5 text-center text-[10.5px] text-muted-foreground">
           {game.folderPath}
         </p>

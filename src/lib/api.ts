@@ -116,3 +116,30 @@ export function scanDirectory(root: string): Promise<ScanReport> {
 export function onScanProgress(handler: (p: ScanProgress) => void): Promise<UnlistenFn> {
   return listen<ScanProgress>("scan-progress", (event) => handler(event.payload));
 }
+
+/* ---------------------------------------------------- C 阶段：忽略 / 删除 */
+
+/**
+ * 被忽略的条目。
+ *
+ * 忽略**不删行**：`games.ignored = 1`，`list_games` 会过滤掉，
+ * 所以这里能捞回来让用户恢复。重扫同一目录也不会把它放出来。
+ */
+export function listIgnoredGames(): Promise<Game[]> {
+  return invoke<Game[]>("list_ignored_games");
+}
+
+/** 忽略 / 取消忽略若干条。返回真正改动的行数（整批在一个事务里）。 */
+export function setGamesIgnored(ids: string[], ignored: boolean): Promise<number> {
+  return invoke<number>("set_games_ignored", { ids, ignored });
+}
+
+/**
+ * 从库里彻底删除若干条（连带游玩记录）。
+ *
+ * ⚠️ 只删数据库：硬盘上的游戏目录、封面缓存都不动。
+ * 删完再扫同一个目录，它会作为"新游戏"回来。
+ */
+export function deleteGames(ids: string[]): Promise<number> {
+  return invoke<number>("delete_games", { ids });
+}

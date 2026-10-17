@@ -516,6 +516,60 @@ pub fn upsert_scanned(conn: &Connection, g: &ScannedGame) -> rusqlite::Result<bo
     Ok(!existed)
 }
 
+/* ------------------------------------------------------------ 库维护：忽略 / 删除 */
+
+/// 列出被忽略的条目（界面上在「设置 → 已忽略」里显示，可以恢复）。
+pub fn list_ignored(conn: &Connection) -> rusqlite::Result<Vec<Game>> {
+    let sql = format!(
+        "SELECT {GAME_COLUMNS} FROM games \
+         WHERE ignored = 1 \
+         ORDER BY folder_path ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], Game::from_row)?;
+
+    let mut games = Vec::new();
+    for row in rows {
+        games.push(row?);
+    }
+    Ok(games)
+}
+
+/// 把若干条标记为忽略 / 取消忽略。返回真正被改动的行数。
+///
+/// **忽略不是删除**：行留在库里，只是 `ignored = 1`，`list_games` 会把它过滤掉。
+/// 这样做的好处是重扫时不用特殊处理：`upsert_scanned` 的冲突分支从来不碰 `ignored`，
+/// 所以用户忽略过的东西不会因为再扫一次目录就冒出来。
+pub fn set_ignored(conn: &Connection, ids: &[String], ignored: bool) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "UPDATE games \
+         SET ignored = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') \
+         WHERE id = ?2",
+    )?;
+
+    let mut changed = 0usize;
+    for id in ids {
+        changed += stmt.execute(rusqlite::params![if ignored { 1 } else { 0 }, id])?;
+    }
+    Ok(changed)
+}
+
+/// 从库里彻底删掉若干条，连带清掉它们的 playtime / 会话 / 来源记录。返回删除的行数。
+///
+/// **只动数据库**：不删硬盘上的游戏目录，也不删封面缓存
+/// （封面按 path_hash 寻址、被多个地方共享，删了会影响以后重新扫回来的同一条）。
+/// 删完再扫同一个目录，它会作为"新游戏"回来 —— 界面上要如实告诉用户。
+pub fn delete_games(conn: &Connection, ids: &[String]) -> rusqlite::Result<usize> {
+    let mut deleted = 0usize;
+    for id in ids {
+        conn.execute("DELETE FROM playtime_sessions WHERE game_hash = ?1", [id])?;
+        conn.execute("DELETE FROM playtime WHERE game_hash = ?1", [id])?;
+        conn.execute("DELETE FROM game_sources WHERE game_hash = ?1", [id])?;
+        deleted += conn.execute("DELETE FROM games WHERE id = ?1", [id])?;
+    }
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod scan_upsert_tests {
     use super::*;
@@ -679,5 +733,121 @@ mod upgrade_tests {
         let games = list_all(&conn).expect("list_all 失败");
         assert_eq!(games.len() as i64, n);
         println!("list_all 正常，首条：{} (dirSize={})", games[0].title_cn, games[0].dir_size);
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    use crate::db::open_at;
+    use crate::db::scanner::{ExeCandidate, ScannedGame};
+
+    fn temp_db(tag: &str) -> Connection {
+        let dir = std::env::temp_dir().join("moeshelf-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.db"));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        let conn = open_at(&path).expect("建库失败");
+        insert_demo_games(&conn).expect("插演示数据失败");
+        conn
+    }
+
+    fn scanned(hash: &str) -> ScannedGame {
+        ScannedGame {
+            path_hash: hash.to_string(),
+            folder_path: format!("E:\\galgame\\工具-{hash}"),
+            folder_name: format!("GARbro-{hash}"),
+            engine: "unknown".to_string(),
+            launch_exe: format!("E:\\galgame\\工具-{hash}\\tool.exe"),
+            launch_candidates: vec![ExeCandidate {
+                name: "tool.exe".to_string(),
+                path: format!("E:\\galgame\\工具-{hash}\\tool.exe"),
+            }],
+            file_count: 3,
+            dir_size: 1024,
+            match_score: 10,
+        }
+    }
+
+    #[test]
+    fn ignore_hides_from_list_but_keeps_the_row() {
+        let conn = temp_db("maint-ignore");
+        let ids = vec![DEMO_IDS[0].to_string()];
+
+        assert_eq!(list_all(&conn).unwrap().len(), 4);
+        assert_eq!(set_ignored(&conn, &ids, true).unwrap(), 1);
+
+        // 书架上看不到它了，但它还在库里（设置里能恢复）
+        assert_eq!(list_all(&conn).unwrap().len(), 3);
+        assert_eq!(list_ignored(&conn).unwrap().len(), 1);
+        assert_eq!(
+            get_one(&conn, DEMO_IDS[0]).unwrap().map(|g| g.title_cn),
+            Some("星光记忆".to_string()),
+            "忽略不能删行，否则设置里就没法恢复了"
+        );
+
+        assert_eq!(set_ignored(&conn, &ids, false).unwrap(), 1);
+        assert_eq!(list_all(&conn).unwrap().len(), 4);
+        assert!(list_ignored(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rescan_does_not_un_ignore() {
+        let conn = temp_db("maint-rescan");
+        let g = scanned("deadbeef");
+        assert!(upsert_scanned(&conn, &g).unwrap(), "第一次应该是新增");
+
+        set_ignored(&conn, &[g.path_hash.clone()], true).unwrap();
+        assert_eq!(list_all(&conn).unwrap().len(), 4, "忽略后不该出现在列表里");
+
+        // 再扫一次同一个目录：行还在，只刷新扫描事实，ignored 保持 1
+        assert!(!upsert_scanned(&conn, &g).unwrap(), "第二次应该是更新");
+        assert_eq!(list_all(&conn).unwrap().len(), 4, "重扫不能把它放出来");
+        assert_eq!(list_ignored(&conn).unwrap().len(), 1, "被忽略的那条还在忽略清单里");
+    }
+
+    #[test]
+    fn delete_removes_row_and_related_records() {
+        let conn = temp_db("maint-delete");
+        let id = DEMO_IDS[1].to_string();
+
+        conn.execute(
+            "INSERT INTO playtime (game_hash, minutes, sessions) VALUES (?1, 120, 3)",
+            [&id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO playtime_sessions (game_hash, started_at, seconds) VALUES (?1, '2026-01-01T00:00:00Z', 3600)",
+            [&id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO game_sources (game_hash, source, fetched_at) VALUES (?1, 'vndb', '2026-01-01T00:00:00Z')",
+            [&id],
+        )
+        .unwrap();
+
+        assert_eq!(delete_games(&conn, &[id.clone()]).unwrap(), 1);
+
+        assert!(get_one(&conn, &id).unwrap().is_none(), "游戏行应该没了");
+        let left: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM playtime WHERE game_hash = ?1) \
+                      + (SELECT COUNT(*) FROM playtime_sessions WHERE game_hash = ?1) \
+                      + (SELECT COUNT(*) FROM game_sources WHERE game_hash = ?1)",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "关联记录必须一起清掉，不能留孤儿");
+        assert_eq!(list_all(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn delete_missing_id_counts_zero() {
+        let conn = temp_db("maint-delete-missing");
+        assert_eq!(delete_games(&conn, &["nope".to_string()]).unwrap(), 0);
     }
 }
