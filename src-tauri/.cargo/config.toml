@@ -1,0 +1,19 @@
+# 本项目专用的 Cargo 源配置（只影响 E:\deskbox\galgame-manager，不改全局 ~/.cargo/config.toml）
+#
+# 背景：全局配置把 crates-io 换成了清华的 **git** 索引，而 git 协议在当前网络下
+# 通过代理连不上（libgit2 报 "Could not connect ... over proxy 127.0.0.1"）。
+# 这里改用 **sparse** 索引（HTTP 直取，cargo 1.68+ 官方推荐，比 git 索引快很多）。
+#
+# 如果将来这个镜像也失效，把下面的 url 换成下面任意一个即可：
+#   sparse+https://rsproxy.cn/index/
+#   sparse+https://mirrors.ustc.edu.cn/crates.io-index/
+
+[source.crates-io]
+replace-with = "tuna-sparse"
+
+[source.tuna-sparse]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+
+[net]
+# 走 git 协议时改用系统 git 命令（比内嵌 libgit2 更容易吃到代理设置）
+git-fetch-with-cli = true

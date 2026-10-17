@@ -1,0 +1,204 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------------
+   设计 token（亮色基线） — 见 DECISIONS.md 第 3 节
+   页面底 = 暖灰白 #FAFAF9，卡片 = 纯白，强调 = 靛蓝 #4F46E5，圆角 12px
+   所有正文/次要文字对比度已实测 >= 4.5:1（WCAG AA）
+   ------------------------------------------------------------------ */
+
+@theme inline {
+    /* Geist 不含中文字形，必须补 CJK 回退，否则中文会掉到系统默认宋体 */
+    --font-sans: 'Geist Variable', 'Microsoft YaHei UI', 'Microsoft YaHei',
+        'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+    --font-heading: var(--font-sans);
+
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+
+    /* 圆角统一 12px 基准，向下派生 */
+    --radius-sm: calc(var(--radius) * 0.5);
+    --radius-md: calc(var(--radius) * 0.75);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.25);
+    --radius-2xl: calc(var(--radius) * 1.6);
+    --radius-3xl: calc(var(--radius) * 2);
+    --radius-4xl: calc(var(--radius) * 2.5);
+}
+
+:root {
+    /* 底色：暖灰白，不用纯白 */
+    --background: #fafaf9;
+    --foreground: #27272a;          /* 深灰，不用纯黑  14.26:1 */
+
+    --card: #ffffff;                 /* 卡片纯白 */
+    --card-foreground: #27272a;
+    --popover: #ffffff;
+    --popover-foreground: #27272a;
+
+    --primary: #4f46e5;              /* 深靛蓝 indigo-600 */
+    --primary-foreground: #ffffff;   /* 白字压在靛蓝上 6.29:1 */
+
+    --secondary: #f4f4f5;
+    --secondary-foreground: #3f3f46;
+
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;     /* 中灰辅助文字 4.63:1 */
+
+    --accent: #eef2ff;               /* indigo-50：hover/选中底 */
+    --accent-foreground: #3730a3;    /* indigo-800 8.88:1 */
+
+    --destructive: #dc2626;
+
+    --border: #e7e5e4;               /* 极浅暖灰边框 */
+    --input: #e7e5e4;
+    --ring: #4f46e5;                 /* 焦点环与强调色一致 */
+
+    --chart-1: #4f46e5;
+    --chart-2: #6366f1;
+    --chart-3: #818cf8;
+    --chart-4: #a5b4fc;
+    --chart-5: #c7d2fe;
+
+    --radius: 0.75rem;               /* 12px */
+
+    --sidebar: #ffffff;
+    --sidebar-foreground: #27272a;
+    --sidebar-primary: #4f46e5;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #eef2ff;
+    --sidebar-accent-foreground: #3730a3;
+    --sidebar-border: #e7e5e4;
+    --sidebar-ring: #4f46e5;
+}
+
+/* 本期只做亮色，dark 块保留占位（不启用），避免将来加暗色时无锚点 */
+.dark {
+    --background: #18181b;
+    --foreground: #fafafa;
+    --card: #27272a;
+    --card-foreground: #fafafa;
+    --popover: #27272a;
+    --popover-foreground: #fafafa;
+    --primary: #818cf8;
+    --primary-foreground: #1e1b4b;
+    --secondary: #3f3f46;
+    --secondary-foreground: #fafafa;
+    --muted: #3f3f46;
+    --muted-foreground: #a1a1aa;
+    --accent: #312e81;
+    --accent-foreground: #e0e7ff;
+    --destructive: #f87171;
+    --border: oklch(1 0 0 / 12%);
+    --input: oklch(1 0 0 / 16%);
+    --ring: #818cf8;
+    --chart-1: #818cf8;
+    --chart-2: #6366f1;
+    --chart-3: #4f46e5;
+    --chart-4: #4338ca;
+    --chart-5: #3730a3;
+    --sidebar: #27272a;
+    --sidebar-foreground: #fafafa;
+    --sidebar-primary: #818cf8;
+    --sidebar-primary-foreground: #1e1b4b;
+    --sidebar-accent: #312e81;
+    --sidebar-accent-foreground: #e0e7ff;
+    --sidebar-border: oklch(1 0 0 / 12%);
+    --sidebar-ring: #818cf8;
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+
+    html,
+    body,
+    #root {
+        height: 100%;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased;
+        /* 桌面应用禁止整页滚动，滚动只发生在各面板内部 */
+        overflow: hidden;
+        /* 拖动窗口时不要选中文字 */
+        user-select: none;
+    }
+
+    /* 但输入框、正文区域要能选中复制 */
+    input,
+    textarea,
+    [contenteditable="true"],
+    .selectable {
+        user-select: text;
+    }
+
+    button:not(:disabled),
+    [role="button"]:not(:disabled) {
+        cursor: pointer;
+    }
+
+    /* 键盘可见焦点环（P0 门禁 UX-005），鼠标点击不显示 */
+    :focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+    }
+
+    /* 细滚动条，与亮色主题一致 */
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #d6d3d1;
+        border-radius: 9999px;
+        border: 3px solid transparent;
+        background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #a8a29e;
+        background-clip: content-box;
+    }
+}
+
+/* ------------------------------------------------------------------
+   动效说明：卡片的入场 / 悬停 / 按压 / 布局重排已全部交给 motion（Framer Motion），
+   见 src/lib/motion.ts 的预设。这里不再保留 CSS keyframes 版本，避免两套动画打架。
+   ------------------------------------------------------------------ */
