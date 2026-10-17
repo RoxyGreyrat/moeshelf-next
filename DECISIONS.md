@@ -424,3 +424,58 @@ filters          // { platforms, engines, tags }
   进度条反而卡住。
 - **`State<Db>` 不能跨 `.await` 持有**（`MutexGuard` 不是 Send）。命令里用
   `spawn_blocking` + `app.state::<Db>()` 在阻塞线程内现取。
+
+---
+
+## 12. 扫描器前端接线（C 阶段收尾，2026-10-17）
+
+### 12.1 选目录为什么走 Rust 命令，而不是前端 `@tauri-apps/plugin-dialog`
+
+Tauri 的 dialog 插件有两套 API：JS 的 `open({directory:true})`，和 Rust 的 `DialogExt`。
+这里选了 Rust：
+
+1. **权限面更小**。JS 版要在 `capabilities/default.json` 里放 `dialog:*`，等于把"任意打开系统对话框"的
+   权限开给 webview；Rust 版只是我们自己的一个 `pick_folder` 命令，权限边界仍然是"命令白名单"。
+2. **符合项目铁律**：`invoke` 只出现在 `src/lib/api.ts`，组件里不 import Tauri 插件。
+   多引一个 `@tauri-apps/plugin-dialog` 包，前端就多一条"绕过 api.ts 直接调系统能力"的路。
+3. 前端只拿到一个字符串路径，之后照旧交给 `scan_directory(root)`，不碰文件系统。
+
+### 12.2 为什么用回调 + oneshot，不用 `blocking_pick_folder()`
+
+`blocking_*` 系列要求**调用线程所在的消息循环正在跑**。在 `async` 命令里调用它，会把 tokio 的
+工作线程占死、主线程等这个工作线程 —— Windows 上表现为对话框不出现、窗口白屏。
+
+正确写法是让插件自己在主线程泵消息，结果通过 oneshot 送回异步命令：
+
+```rust
+let (tx, rx) = tokio::sync::oneshot::channel();
+app.dialog().file().set_title(..).pick_folder(move |p| { let _ = tx.send(p); });
+rx.await
+```
+
+`tokio` 只开 `sync` 特性（`tauri` 本来就依赖 tokio，不会多编译一份运行时）。
+
+### 12.3 进度为什么"塞进状态行"，而不是浮层或横条
+
+试过浮层胶囊（`absolute top-16`）：会压住状态行的快捷键提示，看着像挡了一层东西。
+也试过在顶栏下面插一条 36px 的横条：扫描开始/结束时整个网格上下跳一次，封面位置全变。
+
+最终做法：书架顶部那行**本来就有**的右侧提示文案，扫描期间整段换成
+`⟳ 正在扫描 1,234 个文件夹 · 发现 12 部 · <当前目录>`，扫完换回来。
+同一行、同一位置、零位移，且这一行本来就不随滚动区移动。
+
+配套：顶栏按钮在扫描期间禁用 + 文案变「扫描中…」+ 转圈。扫描没有"总目录数"，
+所以**不做百分比进度条** —— 假的百分比比没有更糟。
+
+### 12.4 扫完为什么整表 `reload()`，不像保存那样只替换一条
+
+保存是"改一行"，所以用返回值替换本地那一条（见第 8 节）。
+扫描是"批量新增 + 批量刷新扫描事实"，返回值里没有行数据，要精确合并就得再查一遍全表 ——
+不如直接 `list_games()`。代价是会清空选中与光标，但扫描本来就是"我换了整个书架"的操作，
+重拉后回到干净的浏览状态反而合理。
+
+### 12.5 扫描失败不改 `gridState`
+
+`gridState` 是"书架有没有内容"的状态。扫描失败时库里原有的 211 部还在，界面不该变成错误页。
+所以失败只弹 Toast，列表保持原样；`error` 只留给"启动时读库失败"。
+

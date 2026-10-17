@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import { listGames, updateGame } from "@/lib/api";
+import { listGames, onScanProgress, pickFolder, scanDirectory, updateGame } from "@/lib/api";
+import type { ScanProgress } from "@/lib/api";
 import type {
   Filters,
   Game,
@@ -14,6 +15,7 @@ import { PLATFORM_LABEL } from "@/types/game";
 
 import { TopBar } from "@/components/layout/TopBar";
 import { FilterSidebar } from "@/components/layout/FilterSidebar";
+import { ScanStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
@@ -46,6 +48,10 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [columns, setColumns] = useState(4);
+
+  // 扫描：scanning 只控制顶栏按钮状态，scanProgress 是 Rust 每 100ms 推过来的最新进度
+  const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
 
   // 切视图会重建几十个卡片子树：走并发更新，让浏览器先响应点击再提交列表
   const [, startTransition] = useTransition();
@@ -166,11 +172,55 @@ export default function App() {
     setEditing(false);
   }, []);
 
-  const handleScan = useCallback(() => {
-    toast.success("扫描完成", {
-      description: "在 E:\\galgame 下发现 12 部游戏，其中 3 部引擎未识别。",
-    });
-  }, []);
+  /**
+   * 扫描：选目录 → 订阅进度 → Rust 扫完写库 → 重拉列表 → 报数字。
+   *
+   * 扫描在 Rust 侧跑在 `spawn_blocking` 里，几分钟也不能卡住界面：
+   * 进度走事件推送，最终结果走命令返回值。
+   */
+  const handleScan = useCallback(async () => {
+    if (scanning) return;
+
+    let root: string | null;
+    try {
+      root = await pickFolder("选择游戏库根目录");
+    } catch (err) {
+      console.error("[pick_folder]", err);
+      toast.error("打不开文件夹选择框", { description: String(err) });
+      return;
+    }
+    if (!root) return; // 用户取消，什么都不做
+
+    setScanning(true);
+    setScanProgress({ dirsScanned: 0, gamesFound: 0, current: "" });
+
+    // 先订阅再调用：Rust 侧一开扫就发事件，订阅晚了会漏掉开头几帧
+    const unlisten = await onScanProgress(setScanProgress);
+
+    try {
+      const report = await scanDirectory(root);
+      // 扫描前选中的那条可能已经不在列表里了，重拉一次最省事
+      await reload();
+
+      const seconds = (report.elapsedMs / 1000).toFixed(1);
+      toast.success(
+        report.inserted > 0
+          ? `扫描完成，新增 ${report.inserted} 部`
+          : "扫描完成，没有新游戏",
+        {
+          description: `识别 ${report.gamesFound} 部 · 更新 ${report.updated} 部 · 看了 ${report.dirsScanned} 个文件夹 · 用时 ${seconds} 秒`,
+        },
+      );
+    } catch (err) {
+      console.error("[scan_directory]", err);
+      // 不动 gridState：库里原有的数据还是好的，只是这次扫描失败了
+      toast.error("扫描失败", { description: String(err) });
+    } finally {
+      unlisten();
+      setScanning(false);
+      setScanProgress(null);
+    }
+  }, [reload, scanning]);
 
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
@@ -333,13 +383,14 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
+      <div className="relative flex h-full flex-col overflow-hidden bg-background text-foreground">
         <TopBar
           query={query}
           onQueryChange={setQuery}
           view={view}
           onViewChange={(v) => startTransition(() => setView(v))}
           onScan={handleScan}
+          scanning={scanning}
           onOpenSettings={() =>
             toast("设置面板将在 B 阶段接入", {
               description: "扫描根目录、代理、刮削源等配置。",
@@ -381,16 +432,21 @@ export default function App() {
                     )}
                   </>
                 ) : gridState === "loading" ? (
-                  "正在扫描目录…"
+                  "正在读取书架…"
                 ) : gridState === "empty" ? (
                   "书架为空"
                 ) : (
                   "加载失败"
                 )}
               </p>
-              <p className="text-[11px] text-muted-foreground/80">
-                Ctrl K 搜索 · 方向键移动 · Enter 打开 · Esc 关闭
-              </p>
+              {/* 扫描中把快捷键提示换成进度：同一行、同一位置，不遮挡封面也不让内容跳动 */}
+              {scanProgress ? (
+                <ScanStatus progress={scanProgress} />
+              ) : (
+                <p className="text-[11px] text-muted-foreground/80">
+                  Ctrl K 搜索 · 方向键移动 · Enter 打开 · Esc 关闭
+                </p>
+              )}
             </div>
 
             {/* pt-6 是必须的：卡片悬停会上浮 4px + 放大 1.04（顶部再外扩约 4.5px），

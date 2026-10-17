@@ -2,22 +2,24 @@
 
 > 写给"下一个接手的人/下一个对话的 AI"。
 > 先读这份，再读 `DECISIONS.md`（决策理由）。两者冲突时以本文件的**现状**为准、以 DECISIONS 的**理由**为准。
-> 最后更新：2026-10-17 19:45（B1 建表完成）
+> 最后更新：2026-10-17 22:10（C 阶段前端接线完成）
 
 ---
 
 ## 0. 一句话现状
 
-**B 阶段主体已通**：211 部真实数据已从旧库迁进 SQLite、封面通过 `cover://` 协议直读旧缓存（211/211 命中）、
-编辑保存已能真正落库并锁定字段、211 部下切视图已从 4 帧优化到 46 帧。
-**离"能日常用"只差：目录扫描器、启动器、补丁管理。**
+**C 阶段已收口**：211 部真实数据在 SQLite 里、封面走 `cover://` 直读旧缓存（211/211 命中）、
+编辑保存真落库并锁定字段、211 部下切视图 4 帧 → 46 帧；目录扫描器（Rust 规则引擎）与
+**前端完整接线**（选目录 → 实时进度 → 写库 → 刷新列表 → 报「新增/更新」）都已跑通。
+**离"能日常用"只差：启动器（启动游戏 + 计时）、补丁管理。**
 
 - 项目路径：`E:\deskbox\galgame-manager`
 - 启动：`cd E:\deskbox\galgame-manager && npm run tauri dev`
 - 构建：`npm run build`（tsc + vite，零错误）
-- Rust 测试：`cd src-tauri && env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy cargo test`（26 passed / 2 ignored）
+- Rust 测试：`cd src-tauri; $env:HTTPS_PROXY=$null; $env:HTTP_PROXY=$null; cargo test`（43 passed / 5 ignored）
+  > 这台机器上系统是 **Windows PowerShell 5.1**，没有 `env` 命令，别照抄 `env -u ...`；用 `$env:XXX=$null`。
 - 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v1，5 张表，33 列，211 行）
-- git：`c9786a6 feat(B2/B3): 旧库迁移 + 封面接入 + 大库性能优化`
+- git：见 `git log --oneline`（最新一次提交是「C 阶段前端接线」）
 
 ---
 
@@ -165,11 +167,14 @@ galgame-manager/
 **命令**（前端唯一入口 `src/lib/api.ts`）：
 
 ```rust
-list_games()      -> Vec<Game>   // 按 first_seen_at DESC 排序，过滤 ignored=1
-add_dummy_game()  -> i64         // 插入 4 条演示数据（INSERT OR IGNORE，幂等）
+list_games()                     -> Vec<Game>    // 按 first_seen_at DESC 排序，过滤 ignored=1
+update_game(id, patch, lock)     -> Game         // 增量补丁 + 锁定字段，返回整行
+pick_folder(title?)              -> Option<String> // 原生选目录，取消返回 null
+scan_directory(root)             -> ScanReport   // 扫描 + 写库，过程发 scan-progress 事件
+migrate_legacy(legacy_dir?)      -> MigrateReport // 运维兜底，界面无入口
 ```
 
-⚠️ `add_dummy_game` 是脚手架，接真实扫描后与前端"插入测试数据"按钮一起删。
+⚠️ 脚手架（`add_dummy_game`、"插入测试数据"按钮）已在 `ca02f4b` 清理掉。
 
 ---
 
@@ -293,9 +298,15 @@ vndbId?
 | 10 | shadcn 组件集体找不到 `cn` | nova 预设从 npm 包 `"cn"` 导入，不是 `@/lib/utils` | 保留 `cn` 依赖 |
 
 > 排查工具：项目里有一套用 `playwright-core` + 无头 Edge 的验收脚本，位于
-> `E:\deskbox\.workbuddy\tmp\pw\`（`qa-motion.js` / `qa-bounce.js` / `qa-clip.js`）。
-> 用法：`msedge --headless=new --remote-debugging-port=93xx` 后 `chromium.connectOverCDP`。
-> **必须带 `env -u HTTP_PROXY ...`**，否则连 localhost 会被代理拦成 502。
+> `E:\deskbox\.workbuddy\tmp\pw\`（`qa-motion.js` / `qa-clip.js` / `qa-scan.js` …）。
+> 两种用法：
+> 1. **纯界面**：`msedge --headless=new --remote-debugging-port=93xx` 打开 `http://localhost:1420`，
+>    用 `page.addInitScript` 伪造 `window.__TAURI_INTERNALS__.invoke`（见 `qa-scan.js`）。
+> 2. **真 IPC**：给窗口加 `additionalBrowserArgs: "--remote-debugging-port=9222"` 再启动：
+>    `npx tauri dev --config E:\deskbox\.workbuddy\tmp\tauri.cdp.json`
+>    （配置放项目外，别提交）。然后 `chromium.connectOverCDP("http://127.0.0.1:9222")`，
+>    可以 `page.evaluate(() => __TAURI_INTERNALS__.invoke("scan_directory", {root}))` 直接打真命令。
+> **必须带 `env -u HTTP_PROXY ...`**（PowerShell 下是 `$env:HTTP_PROXY=$null`），否则连 localhost 会被代理拦成 502。
 
 ---
 
@@ -431,9 +442,64 @@ update_game(id, patch, lock)     -> Game         // ✅ 已实现
 3. `unknown` 仍有 90 部（旧库 80）。扫描器的引擎判定比迁移时的 `engine_probe` 更保守，
    且 `engine_probe` 在扫描路径里只在命中时才被调用。
 
-**下一步（C 阶段剩余）**：前端接 `scan_directory`
-- 顶栏「扫描文件夹」→ `tauri-plugin-dialog` 选目录 → 订阅 `scan-progress` → 进度条
-- 扫完 `reload()` + Toast 报「新增 N / 更新 M」
+**下一步**：曾经是「前端接 `scan_directory`」，现已完成 —— 见 7.6。
+
+### 7.6 C 阶段前端接线（2026-10-17 22:00 完成）
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| 原生选目录 | `commands.rs::pick_folder` | `tauri-plugin-dialog` 的**回调 API + oneshot**，不是 `blocking_pick_folder()`。只用 Rust API，capabilities 里**不需要** `dialog:*` 权限 |
+| 前端出口 | `src/lib/api.ts` | 新增 `pickFolder` / `scanDirectory` / `onScanProgress`；`invoke` 仍然只在这一个文件里出现 |
+| 扫描流程 | `App.tsx::handleScan` | 选目录 → 先订阅再调用 → 扫完 `reload()` → Toast 报数字；用户取消就静默返回 |
+| 按钮状态 | `TopBar.tsx` | 扫描中按钮禁用 + 转圈 + 文案变「扫描中…」 |
+| 进度显示 | `layout/ScanStatus.tsx` | 嵌在书架状态行里，**临时替换右侧快捷键提示**（不做浮层：浮层会盖住封面、插横条会让网格上下跳） |
+
+**实测（真机、真 IPC、真库）**
+
+```
+scan_directory 返回 { dirsScanned: 3, gamesFound: 2, inserted: 2, updated: 0, elapsedMs: 119 }
+F5 之后：状态行 共 211 部 → 共 213 部，新增的两部排在最前
+清理测试行后重新 F5：回到 211 部
+```
+
+UI 流程（按钮 → 进度 → Toast → 刷新）用无头 Edge + 假 `__TAURI_INTERNALS__.invoke` 跑过一遍：
+`正在扫描 188 个文件夹 · 发现 4 部 · E:\galgame\...` → Toast「扫描完成，新增 2 部 / 识别 225 部 · 更新 209 部」。
+脚本在 `E:\deskbox\.workbuddy\tmp\pw\qa-scan.js`、`qa-real-scan.js`。
+
+**C 阶段还没做的**（按优先级）：
+1. **忽略清单**：扫 `E:\galgame` 会把 `GARbro` / `FreeMoteToolkit` / `Zcode` 这类工具目录收成游戏（约 6 条）。
+   表 `scan_roots` 已建好 `ignore_paths` 列，缺的是「右键忽略 / 在设置里管理」的 UI。
+2. **取消扫描**：现在点开始就只能等（`E:\galgame` 实测 90~105 秒）。Rust 侧需要一个 `AtomicBool` 取消标志。
+3. **扫描根目录记忆**：`scan_roots` 表还是空的，每次都要手选目录。
+
+### 7.7 下一步：D 阶段（启动器 + 补丁管理）建议顺序
+
+**D1. 启动游戏（最小可用）**
+- 命令 `launch_game(id)`：按 `games.launch_exe` 起进程，工作目录用 `folder_path`
+- 启动前校验 exe 是否存在：不存在就把错误原样抛给界面，**不要静默失败**
+- 会话记账：`playtime_sessions` 插一行 start_at；退出后回填 end_at / duration 并累加 `playtime`
+- 进程跟踪：`wait()` 必须放后台线程（不能阻塞 IPC），退出事件用 `emit` 回前端
+  ⚠️ galgame 常见"启动器再拉子进程"，只 `wait()` 父进程会提前记结束 —— 需要 Job Object 或轮询进程名
+- 前端：详情面板「启动游戏」按钮接上；`App.tsx` 里的 `playing` 现在还是 1.4 秒假定时器
+
+**D2. 玩过多久**
+- 详情面板显示 总时长 / 最近游玩 / 次数；列表加"按最近游玩排序"
+
+**D3. 补丁管理**
+- 先做"发现 + 列出"，不自动应用：扫描时把 `patch/`、`汉化补丁/` 之类记进库
+- 真要应用就必须**先快照被覆盖的文件**到 `%APPDATA%\com.moeshelf.next\patch-backup\`，没有还原能力就不提供一键
+
+**风险**：UAC（管理员 exe）、含空格/日文的路径、需要兼容层的老游戏，这三类会在 D1 集中出现。
+
+---
+
+### 7.8 本机环境的两个坑（接手时先看）
+
+1. 这台机器的 shell 是 **Windows PowerShell 5.1**，不是 PowerShell 7：
+   - `env -u XXX cargo ...` 会报「无法将 env 项识别为 cmdlet」→ 改用 `$env:HTTP_PROXY=$null`
+   - `.ps1` 文件含中文时必须存 **UTF-8 with BOM**，否则按 GBK 解析、直接语法错误
+2. **沙箱限制会让 `pwsh` 起不来**（退出码 0xC0000142，DLL 初始化失败）。
+   本会话切到「完全权限」后正常。若再遇到，先确认权限模式，不要在沙箱里反复重试。
 
 ---
 

@@ -8,6 +8,9 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // 原生文件夹选择框（只在 commands::pick_folder 里用 Rust API，
+        // 前端不直接 import 这个插件，因此 capabilities 不需要 dialog:* 权限）
+        .plugin(tauri_plugin_dialog::init())
         // 封面协议：cover://<8位hex> → 读旧库缓存里的 .bin，显式带上 Content-Type。
         // 前端在 Windows 上访问的是 http://cover.localhost/<hash>（Tauri 的协议映射规则）。
         .register_asynchronous_uri_scheme_protocol("cover", |_ctx, request, responder| {
@@ -57,6 +60,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::update_game,
+            commands::pick_folder,
             commands::scan_directory,
             commands::migrate_legacy
         ])

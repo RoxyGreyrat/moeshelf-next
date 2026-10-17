@@ -1262,3 +1262,89 @@ mod skip_tests {
         assert_eq!(names, vec!["作品"], "临时文件 / python 不该被当成游戏");
     }
 }
+
+/// 端到端：真实扫描 → 真实写库，但写在**库的副本**上，不动正式库。
+///
+/// 手动跑：`cargo test scan_into_temp_db -- --ignored --nocapture`
+#[cfg(test)]
+mod end_to_end {
+    use super::*;
+    use crate::db::{open_at, repo};
+
+    #[test]
+    #[ignore]
+    fn scan_into_temp_db() {
+        let root = std::path::PathBuf::from(format!("E:{}", std::path::MAIN_SEPARATOR)).join("galgame");
+        if !root.is_dir() {
+            println!("跳过：本机没有 {}", root.display());
+            return;
+        }
+
+        // 1. 复制一份 dev 库到临时目录
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("moeshelf.db");
+        let dir = std::env::temp_dir().join("moeshelf-e2e");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("moeshelf.db");
+        if src.exists() {
+            for suffix in ["", "-wal", "-shm"] {
+                let from = src.with_file_name(format!("moeshelf.db{suffix}"));
+                if from.exists() {
+                    std::fs::copy(&from, dst.with_file_name(format!("moeshelf.db{suffix}")))
+                        .unwrap();
+                }
+            }
+        }
+        println!("工作库（副本）：{}", dst.display());
+
+        let conn = open_at(&dst).expect("打开副本失败");
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
+            .unwrap();
+        println!("扫描前：{before} 条");
+
+        // 2. 真扫描
+        let started = Instant::now();
+        let games = scan_root(&root, |_| {}).expect("扫描失败");
+        println!("扫描到 {} 部，耗时 {:.1}s", games.len(), started.elapsed().as_secs_f64());
+
+        // 3. 真写库（一个事务）
+        let tx = conn.unchecked_transaction().unwrap();
+        let mut inserted = 0;
+        let mut updated = 0;
+        for g in &games {
+            if repo::upsert_scanned(&tx, g).expect("写入失败") {
+                inserted += 1;
+            } else {
+                updated += 1;
+            }
+        }
+        tx.commit().unwrap();
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
+            .unwrap();
+        println!("写库结果：新增 {inserted} · 更新 {updated}");
+        println!("扫描后：{after} 条（应为 {} + {inserted}）", before);
+
+        assert_eq!(after, before + inserted as i64, "行数必须对得上");
+
+        // 4. 抽查：新行有目录大小、老行标题没被冲掉
+        let with_size: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games WHERE dir_size > 0", [], |r| r.get(0))
+            .unwrap();
+        println!("有目录大小的行：{with_size} / {after}");
+        assert!(with_size >= games.len() as i64 - 1, "扫描出来的行都该有 dir_size");
+
+        let sample: (String, i64, String) = conn
+            .query_row(
+                "SELECT title_cn, dir_size, engine FROM games WHERE dir_size > 0 LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        println!("抽样：{} · {} 字节 · 引擎 {}", sample.0, sample.1, sample.2);
+    }
+}

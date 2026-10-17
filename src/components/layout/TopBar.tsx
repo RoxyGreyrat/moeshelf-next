@@ -1,4 +1,4 @@
-import { LayoutGrid, List, ScanLine, Search, Settings, X } from "lucide-react";
+import { LayoutGrid, List, Loader2, ScanLine, Search, Settings, X } from "lucide-react";
 import type { ViewMode } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ interface TopBarProps {
   view: ViewMode;
   onViewChange: (v: ViewMode) => void;
   onScan: () => void;
+  scanning: boolean;
   onOpenSettings: () => void;
   searchRef: React.RefObject<HTMLInputElement | null>;
 }
@@ -26,6 +27,7 @@ export function TopBar({
   view,
   onViewChange,
   onScan,
+  scanning,
   onOpenSettings,
   searchRef,
 }: TopBarProps) {
@@ -83,9 +85,23 @@ export function TopBar({
           </ToggleGroupItem>
         </ToggleGroup>
 
-        <Button onClick={onScan} size="sm" className="h-9 gap-1.5 px-3">
-          <ScanLine className="size-4" />
-          扫描文件夹
+        <Button
+          onClick={onScan}
+          size="sm"
+          disabled={scanning}
+          className="h-9 gap-1.5 px-3"
+        >
+          {scanning ? (
+            <>
+              <Loader2 className="size-4 animate-spin" />
+              扫描中…
+            </>
+          ) : (
+            <>
+              <ScanLine className="size-4" />
+              扫描文件夹
+            </>
+          )}
         </Button>
 
         <Tooltip>

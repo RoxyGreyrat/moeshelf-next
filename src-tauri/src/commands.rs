@@ -54,6 +54,34 @@ use crate::db::scanner;
 use serde::Serialize;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
+
+/// 弹出系统原生的"选择文件夹"对话框，返回用户选中的绝对路径。
+///
+/// 用户取消返回 `Ok(None)` —— 取消不是错误，前端静默忽略即可。
+///
+/// 为什么用回调 API + oneshot，而不用 `blocking_pick_folder()`：
+/// 阻塞版依赖调用线程所在的消息循环，在 async 命令里调它会把运行时线程占死
+/// （Windows 上表现为对话框不出现、窗口白屏）。回调版由主线程自己泵消息，安全。
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle, title: Option<String>) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<std::path::PathBuf>>();
+
+    app.dialog()
+        .file()
+        .set_title(title.unwrap_or_else(|| "选择游戏库根目录".to_string()))
+        .pick_folder(move |picked| {
+            // 选到的是虚拟位置（拿不到真实路径）时按"取消"处理，避免前端拿到空串去扫描
+            let path = picked.and_then(|p| p.into_path().ok());
+            let _ = tx.send(path);
+        });
+
+    let picked = rx
+        .await
+        .map_err(|_| "文件夹选择对话框被意外关闭".to_string())?;
+
+    Ok(picked.map(|p| p.to_string_lossy().to_string()))
+}
 
 /// 扫描进度事件名。
 ///

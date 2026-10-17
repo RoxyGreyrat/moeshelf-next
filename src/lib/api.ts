@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Game } from "@/types/game";
 
 /**
@@ -70,4 +71,48 @@ export interface MigrateReport {
 /** 从旧库一次性迁移（旧库只读；全部 INSERT OR REPLACE，可重复执行） */
 export function migrateLegacy(legacyDir?: string): Promise<MigrateReport> {
   return invoke<MigrateReport>("migrate_legacy", { legacyDir });
+}
+
+/* ---------------------------------------------------------------- C 阶段：扫描 */
+
+/** 扫描过程中 Rust 侧推过来的进度（节流到约 10 帧/秒，见 commands.rs） */
+export interface ScanProgress {
+  /** 已处理的目录数（不是游戏数，目录多得多） */
+  dirsScanned: number;
+  /** 已识别出的游戏数 */
+  gamesFound: number;
+  /** 当前正在看的目录，结束时是空串 */
+  current: string;
+}
+
+/** 一次扫描的最终结果 */
+export interface ScanReport {
+  root: string;
+  dirsScanned: number;
+  gamesFound: number;
+  /** 新增进库的条数 */
+  inserted: number;
+  /** 库里已有、只刷新了扫描事实（路径/体积/主程序）的条数 */
+  updated: number;
+  elapsedMs: number;
+}
+
+/** 弹出系统文件夹选择框。用户取消时解析为 null。 */
+export function pickFolder(title?: string): Promise<string | null> {
+  return invoke<string | null>("pick_folder", { title: title ?? null });
+}
+
+/**
+ * 扫描一个根目录并写库。
+ *
+ * 注意这个调用会持续几十秒到几分钟：扫描期间 Rust 侧每 100ms 发一次
+ * `scan-progress` 事件，想显示进度就先调 `onScanProgress`。
+ */
+export function scanDirectory(root: string): Promise<ScanReport> {
+  return invoke<ScanReport>("scan_directory", { root });
+}
+
+/** 订阅扫描进度。返回值是取消订阅函数，**必须**在组件卸载或扫描结束时调用。 */
+export function onScanProgress(handler: (p: ScanProgress) => void): Promise<UnlistenFn> {
+  return listen<ScanProgress>("scan-progress", (event) => handler(event.payload));
 }
