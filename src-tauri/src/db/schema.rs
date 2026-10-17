@@ -4,7 +4,7 @@
 //! 改动表结构时**必须**新建一版 `V2_DDL` 并把 `SCHEMA_VERSION` 加 1，
 //! 再在 `db::init` 里按 `PRAGMA user_version` 选择要执行的批次 —— 不要直接改 V1。
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub const V1_DDL: &str = r#"
 -- ---------------------------------------------------------------- games
@@ -100,4 +100,13 @@ CREATE TABLE IF NOT EXISTS game_sources (
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (game_hash, source)
 );
+"#;
+
+/// V2：目录扫描器需要记录"这个游戏占多大"。
+///
+/// 旧库只有 `file_count`（而且是**直接子项数**，不是递归数），没有体积字段。
+/// 扫描器要报告"目录大小"，所以补一列。`ALTER TABLE ADD COLUMN` 带默认值，
+/// 老数据自动填 0，不需要回填。
+pub const V2_DDL: &str = r#"
+ALTER TABLE games ADD COLUMN dir_size INTEGER NOT NULL DEFAULT 0;
 "#;

@@ -286,7 +286,17 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, crate::db::schema::SCHEMA_VERSION);
+
+        // V2 加的那一列必须在
+        let has_dir_size: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('games') WHERE name = 'dir_size'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_dir_size, 1, "V2 必须补出 dir_size 列");
     }
 
     #[test]
@@ -416,5 +426,258 @@ mod tests {
         let (_, conn) = temp_db("missing");
         let p = patch(|p| p.title_cn = Some("x".to_string()));
         assert!(update_game(&conn, "deadbeef", &p, true).is_err());
+    }
+}
+
+/* ------------------------------------------------------------ 扫描结果写库 */
+
+use crate::db::scanner::ScannedGame;
+use rusqlite::OptionalExtension;
+
+/// `INSERT ... ON CONFLICT` 的写法要点（改之前先读）：
+///
+/// - **保留人工数据**：`title_cn` / `tags` / `rating` / `cover_url` 这些列在冲突时**不覆盖**，
+///   只在新行时填 `folder_name` 兜底。扫一次不能把刮削出来或人工改过的元数据冲掉。
+/// - **`first_seen_at` 只在插入时写**，冲突时不动 —— 它是"入库时间"，不是"最后扫描时间"。
+/// - **`launch_exe` / `engine` 受 `locked_fields` 保护**：
+///   用 `instr(locked_fields, '"launchExe"')` 判断锁没锁，锁了就不动。
+/// - **`engine` 只在原值是 `unknown` 时才被覆盖**，避免把迁移时指纹识别出来的结果
+///   再扫成 unknown（扫描器的引擎判定更保守）。
+const UPSERT_SCANNED_SQL: &str = r#"
+INSERT INTO games (
+    id, path_hash, title, title_cn, original_title, developer, released,
+    engine, platform, tags, rating, rating_source, description, cn_description,
+    cover_url, launch_exe, folder_path, folder_name, file_count, dir_size,
+    match_score, completed, root_path, saved_at, added_at, updated_at,
+    first_seen_at, locked_fields, field_sources, manual_match, ignored
+) VALUES (
+    ?1, ?1, '', ?2, '', '', '',
+    ?3, 'windows', '[]', 0, '', '', '',
+    NULL, ?4, ?5, ?6, ?7, ?8,
+    ?9, 0, ?10, '',
+    strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+    strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+    strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+    '[]', '{}', NULL, 0
+)
+ON CONFLICT(path_hash) DO UPDATE SET
+    folder_path = excluded.folder_path,
+    folder_name = excluded.folder_name,
+    file_count  = excluded.file_count,
+    dir_size    = excluded.dir_size,
+    match_score = excluded.match_score,
+    updated_at  = excluded.updated_at,
+    title_cn    = CASE WHEN games.title_cn = '' THEN excluded.title_cn ELSE games.title_cn END,
+    launch_exe  = CASE
+        WHEN instr(games.locked_fields, '"launchExe"') > 0 THEN games.launch_exe
+        WHEN excluded.launch_exe = '' THEN games.launch_exe
+        ELSE excluded.launch_exe
+    END,
+    engine      = CASE
+        WHEN instr(games.locked_fields, '"engine"') > 0 THEN games.engine
+        WHEN games.engine = 'unknown' AND excluded.engine <> 'unknown' THEN excluded.engine
+        ELSE games.engine
+    END
+"#;
+
+/// 写入一条扫描结果。返回 `true` 表示新增，`false` 表示更新了已有行。
+pub fn upsert_scanned(conn: &Connection, g: &ScannedGame) -> rusqlite::Result<bool> {
+    let existed: bool = conn
+        .query_row(
+            "SELECT 1 FROM games WHERE path_hash = ?1",
+            [&g.path_hash],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+
+    let now_root = g
+        .folder_path
+        .rsplit_once(std::path::MAIN_SEPARATOR)
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_default();
+
+    conn.execute(
+        UPSERT_SCANNED_SQL,
+        rusqlite::params![
+            g.path_hash,     // ?1
+            g.folder_name,   // ?2
+            g.engine,        // ?3
+            g.launch_exe,    // ?4
+            g.folder_path,   // ?5
+            g.folder_name,   // ?6
+            g.file_count,    // ?7
+            g.dir_size as i64, // ?8
+            g.match_score,   // ?9
+            now_root,        // ?10
+        ],
+    )?;
+
+    Ok(!existed)
+}
+
+#[cfg(test)]
+mod scan_upsert_tests {
+    use super::*;
+    use crate::db::open_at;
+    use crate::db::scanner::{ExeCandidate, ScannedGame};
+
+    fn temp_db(tag: &str) -> Connection {
+        let dir = std::env::temp_dir().join("moeshelf-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.db"));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        open_at(&path).expect("建库失败")
+    }
+
+    fn sample(hash: &str, engine: &str, exe: &str) -> ScannedGame {
+        ScannedGame {
+            path_hash: hash.to_string(),
+            folder_path: format!("E:\\galgame\\{hash}"),
+            folder_name: format!("作品-{hash}"),
+            engine: engine.to_string(),
+            launch_exe: exe.to_string(),
+            launch_candidates: vec![ExeCandidate {
+                name: "game.exe".to_string(),
+                path: exe.to_string(),
+            }],
+            file_count: 12,
+            dir_size: 4096,
+            match_score: 10,
+        }
+    }
+
+    #[test]
+    fn insert_then_update_counted_correctly() {
+        let conn = temp_db("scan-upsert");
+        let g = sample("aaaa1111", "kirikiri", "E:\\g\\game.exe");
+
+        assert!(upsert_scanned(&conn, &g).unwrap(), "首次应是新增");
+        assert!(!upsert_scanned(&conn, &g).unwrap(), "第二次应是更新");
+
+        let row = get_one(&conn, "aaaa1111").unwrap().expect("行应该在");
+        assert_eq!(row.title_cn, "作品-aaaa1111", "新行用文件夹名兜底标题");
+        assert_eq!(row.engine, "kirikiri");
+        assert_eq!(row.dir_size, 4096);
+        assert_eq!(row.file_count, 12);
+    }
+
+    #[test]
+    fn rescan_keeps_scraped_metadata() {
+        let conn = temp_db("scan-keep");
+        let g = sample("bbbb2222", "kirikiri", "E:\\g\\game.exe");
+        upsert_scanned(&conn, &g).unwrap();
+
+        // 模拟刮削/人工编辑填进去的元数据
+        let p = GamePatch {
+            title_cn: Some("刮削出来的正式名".to_string()),
+            developer: Some("Yuzusoft".to_string()),
+            tags: Some(vec!["纯爱".to_string()]),
+            rating: Some(8.8),
+            ..Default::default()
+        };
+        update_game(&conn, "bbbb2222", &p, true).unwrap();
+
+        // 再扫一次（例如文件数变了）
+        let mut g2 = g.clone();
+        g2.file_count = 99;
+        upsert_scanned(&conn, &g2).unwrap();
+
+        let row = get_one(&conn, "bbbb2222").unwrap().unwrap();
+        assert_eq!(row.title_cn, "刮削出来的正式名", "重扫不能覆盖标题");
+        assert_eq!(row.developer, "Yuzusoft", "重扫不能覆盖会社");
+        assert_eq!(row.tags, vec!["纯爱"]);
+        assert_eq!(row.rating, 8.8);
+        assert_eq!(row.file_count, 99, "扫描事实应该更新");
+    }
+
+    #[test]
+    fn locked_launch_exe_is_protected() {
+        let conn = temp_db("scan-lock");
+        let g = sample("cccc3333", "unknown", "E:\\g\\game.exe");
+        upsert_scanned(&conn, &g).unwrap();
+
+        // 用户手动指定了启动项 → 锁定
+        let p = GamePatch {
+            launch_exe: Some("E:\\g\\汉化版.exe".to_string()),
+            ..Default::default()
+        };
+        update_game(&conn, "cccc3333", &p, true).unwrap();
+
+        // 重扫：扫描器给出的是另一个 exe，引擎也从 unknown 变成了 kirikiri
+        let mut g2 = g.clone();
+        g2.launch_exe = "E:\\g\\game.exe".to_string();
+        g2.engine = "kirikiri".to_string();
+        upsert_scanned(&conn, &g2).unwrap();
+
+        let row = get_one(&conn, "cccc3333").unwrap().unwrap();
+        assert_eq!(row.launch_exe, "E:\\g\\汉化版.exe", "锁定的启动项不能被扫描覆盖");
+        assert_eq!(row.engine, "kirikiri", "引擎是 unknown 时允许被扫描补全");
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+    use crate::db::open_at;
+
+    /// 拿**真实 dev 库的副本**验证 V1 → V2 升级不会弄坏数据。
+    ///
+    /// 这一步很重要：`ALTER TABLE ADD COLUMN` 一旦写错，用户下次启动应用就会
+    /// 直接打不开库。复制到临时目录做，绝不动原件。
+    ///
+    /// 手动跑：`cargo test upgrade_real_dev_db_copy -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn upgrade_real_dev_db_copy() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("moeshelf.db");
+        if !src.exists() {
+            println!("跳过：没有 dev 库");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join("moeshelf-upgrade-check");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("moeshelf.db");
+        for suffix in ["", "-wal", "-shm"] {
+            let from = src.with_file_name(format!("moeshelf.db{suffix}"));
+            if from.exists() {
+                std::fs::copy(&from, dst.with_file_name(format!("moeshelf.db{suffix}"))).unwrap();
+            }
+        }
+
+        // 升级前
+        let before = {
+            let c = Connection::open(&dst).unwrap();
+            let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap();
+            println!("升级前：schema v{v}，{n} 行");
+            (v, n)
+        };
+
+        // 走一次真实的 open_at（会跑 V2）
+        let conn = open_at(&dst).expect("升级失败");
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap();
+        println!("升级后：schema v{v}，{n} 行");
+
+        assert_eq!(v, crate::db::schema::SCHEMA_VERSION);
+        assert_eq!(n, before.1, "升级不能丢行");
+
+        // 新列必须能读，且老数据是 0
+        let zeros: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games WHERE dir_size = 0", [], |r| r.get(0))
+            .unwrap();
+        println!("dir_size 仍是 0 的行：{zeros} / {n}");
+
+        // 用真实的 list_all 走一遍，确认结构体映射没崩
+        let games = list_all(&conn).expect("list_all 失败");
+        assert_eq!(games.len() as i64, n);
+        println!("list_all 正常，首条：{} (dirSize={})", games[0].title_cn, games[0].dir_size);
     }
 }

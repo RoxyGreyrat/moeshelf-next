@@ -54,6 +54,8 @@ export interface Game {
   launchExe: string;
   folderPath: string;
   fileCount: number;
+  /** 目录总字节数（递归统计）。旧数据为 0（V2 才加的列） */
+  dirSize: number;
   matchScore: number;
   completed: boolean;
   /** ISO 字符串 */

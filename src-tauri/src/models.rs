@@ -26,6 +26,8 @@ pub struct Game {
     pub launch_exe: String,
     pub folder_path: String,
     pub file_count: i64,
+    /// 目录总字节数（递归统计）。旧库没有这一列，V2 迁移补的
+    pub dir_size: i64,
     pub match_score: f64,
     pub completed: bool,
     pub first_seen_at: String,
@@ -36,8 +38,8 @@ pub struct Game {
 /// 查询时固定使用的列顺序，避免 `SELECT *` 与 from_row 的顺序耦合。
 pub const GAME_COLUMNS: &str = "id, path_hash, title, title_cn, original_title, developer, \
      released, engine, platform, tags, rating, rating_source, description, cn_description, \
-     cover_url, launch_exe, folder_path, file_count, match_score, completed, first_seen_at, \
-     locked_fields, vndb_id";
+     cover_url, launch_exe, folder_path, file_count, dir_size, match_score, completed, \
+     first_seen_at, locked_fields, vndb_id";
 
 /// 一次编辑提交的增量补丁。
 ///
@@ -133,6 +135,7 @@ impl Game {
             launch_exe: row.get("launch_exe")?,
             folder_path: row.get("folder_path")?,
             file_count: row.get("file_count")?,
+            dir_size: row.get("dir_size")?,
             match_score: row.get("match_score")?,
             completed: row.get::<_, i64>("completed")? != 0,
             first_seen_at: row.get("first_seen_at")?,

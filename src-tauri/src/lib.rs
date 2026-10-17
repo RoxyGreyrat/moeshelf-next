@@ -57,6 +57,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::update_game,
+            commands::scan_directory,
             commands::migrate_legacy
         ])
         .run(tauri::generate_context!())

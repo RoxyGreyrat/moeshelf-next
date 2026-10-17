@@ -2,6 +2,7 @@ pub mod cover_cache;
 pub mod engine_probe;
 pub mod migrate;
 pub mod repo;
+pub mod scanner;
 pub mod schema;
 
 use rusqlite::Connection;
@@ -55,7 +56,11 @@ pub fn open_at(path: &Path) -> Result<Connection, String> {
         conn.execute_batch(schema::V1_DDL)
             .map_err(|e| format!("建表失败（V1）：{e}"))?;
     }
-    // 将来加 V2：if version < 2 { execute_batch(schema::V2_DDL) }
+    if version < 2 {
+        // 只对"已经是 v1、没有 dir_size 列"的库执行；全新库会先跑 V1 再跑这里，同样成立
+        conn.execute_batch(schema::V2_DDL)
+            .map_err(|e| format!("升级失败（V2）：{e}"))?;
+    }
 
     conn.pragma_update(None, "user_version", schema::SCHEMA_VERSION)
         .map_err(|e| format!("写入 user_version 失败：{e}"))?;
