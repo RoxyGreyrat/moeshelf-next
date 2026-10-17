@@ -199,6 +199,16 @@
 }
 
 /* ------------------------------------------------------------------
-   动效说明：卡片的入场 / 悬停 / 按压 / 布局重排已全部交给 motion（Framer Motion），
-   见 src/lib/motion.ts 的预设。这里不再保留 CSS keyframes 版本，避免两套动画打架。
+   Radix ScrollArea 兼容修复（必须保留）
+   Radix 会在 viewport 里塞一个 `display: table; min-width: 100%` 的包裹 div。
+   table 布局按内容的 max-content 宽度撑开 —— 遇到长路径、nowrap 文本时
+   （详情面板里的主程序路径就是典型），内层会涨到 379px 而面板只有 320px，
+   多出来的部分被推到窗口外，表现为"右侧显示不全"。
+   强制块级 + 100% 宽，让 truncate / flex-wrap 正常工作。
    ------------------------------------------------------------------ */
+[data-radix-scroll-area-viewport] > div {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+}
+

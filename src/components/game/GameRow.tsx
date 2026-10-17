@@ -1,7 +1,7 @@
 import { CircleCheck, Star } from "lucide-react";
 import { motion } from "motion/react";
 import type { Game } from "@/types/game";
-import { ENGINE_LABEL, PLATFORM_LABEL } from "@/types/game";
+import { engineLabel, PLATFORM_LABEL } from "@/types/game";
 import { springHover } from "@/lib/motion";
 import { CoverArt } from "./CoverArt";
 
@@ -71,7 +71,7 @@ export function GameRow({ game, hovered, selected, cursor, multi }: GameRowProps
       </div>
 
       <div className="hidden w-16 shrink-0 text-[11px] text-muted-foreground md:block">
-        {ENGINE_LABEL[game.engine]}
+        {engineLabel(game.engine)}
       </div>
       <div className="hidden w-16 shrink-0 text-[11px] text-muted-foreground lg:block">
         {PLATFORM_LABEL[game.platform]}

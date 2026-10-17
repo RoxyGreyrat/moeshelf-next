@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import type { Engine, Game, Platform } from "@/types/game";
-import { ENGINE_LABEL, PLATFORM_LABEL } from "@/types/game";
+import { ENGINE_LABEL, engineLabel, PLATFORM_LABEL } from "@/types/game";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,7 +110,8 @@ function toDraft(g: Game): Draft {
     platform: g.platform,
     rating: String(g.rating),
     tags: g.tags.join("、"),
-    description: g.description,
+    // 编辑框里编辑的就是"用户能看到的简介"，中文优先
+    description: g.cnDescription?.trim() || g.description,
   };
 }
 
@@ -177,8 +178,14 @@ export function DetailPanel({
       .filter(Boolean);
     if (tags.join("|") !== game.tags.join("|")) patch.tags = tags;
 
-    if (draft.description.trim() !== game.description)
-      patch.description = draft.description.trim();
+    // 简介写回原来的位置：本来有中文简介就更新中文，否则更新英文字段
+    const sourceCn = game.cnDescription?.trim();
+    const nextDesc = draft.description.trim();
+    if (sourceCn) {
+      if (nextDesc !== sourceCn) patch.cnDescription = nextDesc;
+    } else if (nextDesc !== game.description) {
+      patch.description = nextDesc;
+    }
 
     onSave(patch);
   };
@@ -191,7 +198,7 @@ export function DetailPanel({
         <div className="absolute inset-0 bg-gradient-to-t from-card via-card/25 to-transparent" />
         <div className="absolute inset-x-3 bottom-2 flex items-center gap-1.5">
           <span className="rounded-full bg-black/35 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-            {ENGINE_LABEL[game.engine]}
+            {engineLabel(game.engine)}
           </span>
           <span className="rounded-full bg-black/35 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
             {PLATFORM_LABEL[game.platform]}
@@ -259,7 +266,7 @@ export function DetailPanel({
                 locked={locked("developer")}
               />
               <FieldRow label="发售日" value={game.released} locked={locked("released")} />
-              <FieldRow label="引擎" value={ENGINE_LABEL[game.engine]} />
+              <FieldRow label="引擎" value={engineLabel(game.engine)} />
               <FieldRow label="平台" value={PLATFORM_LABEL[game.platform]} />
               <FieldRow
                 label="评分来源"
@@ -362,7 +369,9 @@ export function DetailPanel({
 
           {!editing && (
             <p className="selectable mt-3 border-t border-border pt-3 text-[12px] leading-[1.75] text-muted-foreground">
-              {game.description}
+              {/* 旧库的中文简介存在 cn_description 里，英文在 description；
+                  中文优先，没有中文才退回英文 */}
+              {game.cnDescription?.trim() || game.description}
             </p>
           )}
         </div>

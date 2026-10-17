@@ -1,7 +1,8 @@
 import type { Game } from "@/types/game";
+import { coverSrc } from "@/lib/cover";
 import { cn } from "@/lib/utils";
 
-/** 低饱和双色板：真库记录没有 coverColors 时，按 id 哈希取一组，保证同一部游戏颜色稳定 */
+/** 低饱和双色板：没有 coverColors 时按 id 哈希取一组，保证同一部游戏颜色稳定 */
 const FALLBACK_PALETTES: [string, string][] = [
   ["#5B5BD6", "#9B8AFB"],
   ["#2E7DA8", "#7FC4D8"],
@@ -25,12 +26,16 @@ function paletteFor(game: Game): [string, string] {
 }
 
 /**
- * 假封面：低饱和双色渐变 + 细斜纹 + 宋体大字水印 + 内描边。
- * 真库接入后这里换成 <img src={coverUrl} />，外层比例与遮罩保持不变。
+ * 封面。
  *
- * variant="poster"（默认，2:3 竖版）：带宋体水印
- * variant="wide"（详情面板顶部 16:9 横图）：只留渐变与斜纹，
- *   因为把竖版水印裁进横图会出现一个巨大的、被切掉的大字，很脏。
+ * ⚠️ 性能约束：库里 200+ 部游戏，这里**不能**用 SVG。
+ * 早先每张卡一棵内联 SVG（渐变 + pattern 斜纹 + clipPath + 水印），
+ * 切视图时 211 棵 SVG 树重建 + 重新栅格化，直接掉到 4 帧/900ms。
+ * 现在全部换成 CSS 图层 + 一张 <img>，纯合成属性，成本极低。
+ *
+ * - 有 coverUrl：走 `cover://` 协议读旧缓存（Rust 那边补 Content-Type）
+ * - 没有 / 加载失败：下面那层 CSS 渐变就是兜底，不留破图
+ * - 水印只在没有真封面时才画，且只是一段文字
  */
 export function CoverArt({
   game,
@@ -42,92 +47,74 @@ export function CoverArt({
   variant?: "poster" | "wide";
 }) {
   const [c1, c2] = paletteFor(game);
-  const gid = `g-${game.id}`;
-  const rid = `r-${game.id}`;
-  const pid = `p-${game.id}`;
-  const vid = `v-${game.id}`;
-  const glyph = game.titleCn.slice(0, 1);
   const wide = variant === "wide";
-  const h = wide ? 169 : 450;
+  const imgSrc = coverSrc(game.coverUrl);
+  const glyph = game.titleCn.slice(0, 1);
 
   return (
-    <svg
-      viewBox={`0 0 300 ${h}`}
-      preserveAspectRatio="xMidYMid slice"
-      className={cn("h-full w-full", className)}
-      aria-hidden="true"
-      role="presentation"
-    >
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor={c1} />
-          <stop offset="100%" stopColor={c2} />
-        </linearGradient>
+    <div className={cn("relative h-full w-full overflow-hidden", className)}>
+      {/* 底色渐变 */}
+      <div
+        className="absolute inset-0"
+        style={{ backgroundImage: `linear-gradient(135deg, ${c1}, ${c2})` }}
+      />
 
-        <radialGradient id={rid} cx="0.7" cy="0.15" r="0.8">
-          <stop offset="0%" stopColor="#ffffff" stopOpacity="0.4" />
-          <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-        </radialGradient>
+      {/* 斜纹：重复线性渐变，代替 SVG pattern */}
+      <div
+        className="absolute inset-0 opacity-[0.09]"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(45deg, #ffffff 0 1px, transparent 1px 16px)",
+        }}
+      />
 
-        {/* 45° 细斜纹，模拟印刷网点，避免纯色的廉价感 */}
-        <pattern
-          id={pid}
-          width="16"
-          height="16"
-          patternUnits="userSpaceOnUse"
-          patternTransform="rotate(45)"
-        >
-          <line
-            x1="0"
-            y1="0"
-            x2="0"
-            y2="16"
-            stroke="#ffffff"
-            strokeWidth="1"
-            strokeOpacity="0.09"
-          />
-        </pattern>
+      {/* 右上高光 */}
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage:
+            "radial-gradient(80% 80% at 70% 15%, rgba(255,255,255,0.40), transparent)",
+        }}
+      />
 
-        <linearGradient id={vid} x1="0" y1="0.5" x2="0" y2="1">
-          <stop offset="0%" stopColor="#000000" stopOpacity="0" />
-          <stop offset="100%" stopColor="#000000" stopOpacity="0.34" />
-        </linearGradient>
-      </defs>
-
-      <rect width="300" height={h} fill={`url(#${gid})`} />
-      <rect width="300" height={h} fill={`url(#${pid})`} />
-      <rect width="300" height={h} fill={`url(#${rid})`} />
-
-      {/* 宋体大字水印：只有低透明度时才好看，别提上去 */}
-      {!wide && (
-        <text
-          x="150"
-          y="268"
-          textAnchor="middle"
-          fontSize="176"
-          fontWeight={700}
-          fill="#ffffff"
-          fillOpacity="0.17"
-          style={{
-            fontFamily:
-              '"Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif',
-          }}
-        >
-          {glyph}
-        </text>
+      {imgSrc ? (
+        <img
+          src={imgSrc}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : (
+        !wide && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/[0.17] select-none"
+            style={{
+              fontFamily:
+                '"Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif',
+              fontSize: "9rem",
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            {glyph}
+          </span>
+        )
       )}
 
-      <rect
-        x="8"
-        y="8"
-        width="284"
-        height={h - 16}
-        fill="none"
-        stroke="#ffffff"
-        strokeOpacity="0.16"
-        strokeWidth="1"
+      {/* 内描边 */}
+      <div className="pointer-events-none absolute inset-[8px] border border-white/15" />
+
+      {/* 底部渐暗，给下层标题做衬底 */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backgroundImage:
+            "linear-gradient(to bottom, transparent 50%, rgba(0,0,0,0.34))",
+        }}
       />
-      <rect width="300" height={h} fill={`url(#${vid})`} />
-    </svg>
+    </div>
   );
 }

@@ -44,6 +44,20 @@
 | 前端接 `list_games` | ✅ | 假数据文件 `src/data/games.ts` 已删除，标签由数据动态汇总 |
 | 旧数据迁移 | ⬜ | 下一步 |
 
+### B 阶段 Step 2：旧数据迁移（2026-10-17 20:00）
+
+| 子任务 | 状态 | 说明 |
+|---|---|---|
+| 迁移模块 | ✅ | `src-tauri/src/db/migrate.rs`，快照 → 只读打开 → 事务内 INSERT OR REPLACE |
+| 触发方式 | ✅ | 左下角调试面板「迁移旧库（一次性）」按钮 → `migrate_legacy` 命令 |
+| 实测结果 | ✅ | 扫描 211 / 导入 211 / 有元数据 211 / 人工覆盖 186 处 / 时长 56 条 |
+| 演示数据清理 | ✅ | 迁移前自动删掉 4 条 `add_dummy_game` 的行，避免混进真实库 |
+| 引擎兜底 | ✅ | 出现 `catsystem2`，`Engine` 类型补登记 + `engineLabel()` 取不到就原样显示 |
+| 标题兜底 | ✅ | 中文名 → 外文名 → 文件夹名 三级，保证卡片不会空标题 |
+
+**触发方式**：跑 `npm run tauri dev` → 点左下角「状态调试」里的**迁移旧库（一次性）** → 等 1 秒 → Toast 报数字。
+迁移**不**在启动时自动跑，必须手动点，避免每次开应用都覆盖手工修改。
+
 ### 明确留下的尾巴（**都还没做**）
 
 1. **详情面板切换游戏时没有内容过渡**——仍是瞬间替换，需要 `AnimatePresence mode="wait"`。
@@ -294,7 +308,30 @@ vndbId?
 - 前端：`src/lib/api.ts` 统一出口，`App.tsx` 启动时读库，假数据文件已删除
 - 验证方式：跑应用看控制台 `[db] 就绪：...（schema v1）`；空库时界面显示空态，点"插入 4 条测试数据"后出现卡片
 
-### B2. 旧数据迁移（**下一步**，一次性，只读旧库）
+### B2. 旧数据迁移（一次性，只读旧库）—— ✅ 已完成 2026-10-17
+
+实现：`src-tauri/src/db/migrate.rs`（`migrate::run(&conn, legacy_dir)`）。
+
+实测（`cargo test migrate_real_legacy -- --ignored --nocapture`）：
+
+```
+games_scanned  211   skipped_fixture 0（2.1.0 活库里本来就没有夹具）
+imported       211   with_metadata   211   without_metadata 0
+playtime       56    overrides_applied 186
+引擎分布  unknown 111 / kirikiri 55 / bgi 18 / artemis 16 / siglus 10 / catsystem2 1
+评分范围  3.8 ~ 8.8（已从 0~100 归一到 0~10），仅 1 部无评分
+锁定字段  coverUrl 68 / titleCn 62 / launchExe 37 / developer 12 / title 7
+```
+
+关键实现细节（**改这个文件前必读**）：
+- 旧库 WAL 模式不能直接只读打开 → 先把 `db/-wal/-shm` 复制到 `%TEMP%\moeshelf-legacy-snapshot`，再 READ_ONLY 打开副本
+- 关联键：`scrape_cache.cache_key LIKE '%::' || games.path_hash`（实测 211/211 命中），必须排除 `company::%`
+- `rating` 旧库是 0~100，新模型 0~10，除以 10 并保留 1 位小数
+- `exe_candidates` 在 2.1.0 是小写 `name/path`，旧 C# 库是大写 `Name/Path`，两种都兼容
+- `titleMap` 的值可能是中文也可能是英文 → 含 CJK 进 `title_cn`，否则进 `title`，都记进 `locked_fields`
+- 事务前先 `purge_demo_games()`，否则演示数据会混进真实库
+
+### B2 原始计划（已完成，保留备查）
 
 源：`E:\moeshelf\moeshelf-build-2.1.0\data\moeshelf.db`（211 games / 58 playtime / 372 scrape_cache）
 

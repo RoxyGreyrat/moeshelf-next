@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import { addDummyGame, listGames } from "@/lib/api";
+import { addDummyGame, DEFAULT_LEGACY_DIR, listGames, migrateLegacy } from "@/lib/api";
 import type {
-  Engine,
   Filters,
   Game,
   GridState,
@@ -11,7 +10,7 @@ import type {
   SelectMode,
   ViewMode,
 } from "@/types/game";
-import { ENGINE_LABEL, PLATFORM_LABEL } from "@/types/game";
+import { PLATFORM_LABEL } from "@/types/game";
 
 import { TopBar } from "@/components/layout/TopBar";
 import { FilterSidebar } from "@/components/layout/FilterSidebar";
@@ -45,7 +44,11 @@ export default function App() {
 
   const [editing, setEditing] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [migrating, setMigrating] = useState(false);
   const [columns, setColumns] = useState(4);
+
+  // 切视图会重建几十个卡片子树：走并发更新，让浏览器先响应点击再提交列表
+  const [, startTransition] = useTransition();
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -118,11 +121,10 @@ export default function App() {
   }, [games]);
 
   const engineCounts = useMemo(() => {
-    const base = Object.fromEntries(
-      (Object.keys(ENGINE_LABEL) as Engine[]).map((e) => [e, 0]),
-    ) as Record<Engine, number>;
-    for (const g of games) base[g.engine] += 1;
-    return base;
+    // 只统计库里真实出现的引擎：真实数据里会有未登记的新引擎（如 catsystem2）
+    const map: Record<string, number> = {};
+    for (const g of games) map[g.engine] = (map[g.engine] ?? 0) + 1;
+    return map;
   }, [games]);
 
   const tagCounts = useMemo(() => {
@@ -184,6 +186,29 @@ export default function App() {
     } catch (err) {
       console.error("[add_dummy_game]", err);
       toast.error("写入测试数据失败", { description: String(err) });
+    }
+  }, [reload]);
+
+  /** 旧库一次性迁移（临时入口，接完真实数据后连按钮一起删） */
+  const handleMigrate = useCallback(async () => {
+    setMigrating(true);
+    try {
+      const report = await migrateLegacy(DEFAULT_LEGACY_DIR);
+      const rows = await reload();
+      toast.success(`迁移完成：导入 ${report.imported} 部`, {
+        description:
+          `扫描 ${report.gamesScanned} · 跳过夹具 ${report.skippedFixture} · ` +
+          `有元数据 ${report.withMetadata} · 人工覆盖 ${report.overridesApplied} 处 · ` +
+          `时长 ${report.playtimeImported} 条 · 界面读到 ${rows.length} 部`,
+      });
+      if (report.warnings.length > 0) {
+        toast(report.warnings.join("；"));
+      }
+    } catch (err) {
+      console.error("[migrate_legacy]", err);
+      toast.error("迁移失败", { description: String(err) });
+    } finally {
+      setMigrating(false);
     }
   }, [reload]);
 
@@ -352,7 +377,7 @@ export default function App() {
           query={query}
           onQueryChange={setQuery}
           view={view}
-          onViewChange={setView}
+          onViewChange={(v) => startTransition(() => setView(v))}
           onScan={handleScan}
           onOpenSettings={() =>
             toast("设置面板将在 B 阶段接入", {
@@ -455,6 +480,8 @@ export default function App() {
           onToastError={() =>
             toast.error("刮削失败", { description: "请求超时，请检查代理设置后重试。" })
           }
+          onMigrate={handleMigrate}
+          migrating={migrating}
         />
 
         <Toaster position="top-center" />

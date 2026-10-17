@@ -1,7 +1,7 @@
 import { CircleCheck, Star } from "lucide-react";
 import { motion } from "motion/react";
 import type { Game } from "@/types/game";
-import { ENGINE_LABEL } from "@/types/game";
+import { engineLabel } from "@/types/game";
 import { springHover } from "@/lib/motion";
 import { CoverArt } from "./CoverArt";
 
@@ -63,7 +63,7 @@ export function GameCard({ game, hovered, multi, selected }: GameCardProps) {
             {game.rating.toFixed(1)}
           </span>
           <span className="ml-auto rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-medium text-white/90 backdrop-blur-sm">
-            {ENGINE_LABEL[game.engine]}
+            {engineLabel(game.engine)}
           </span>
         </motion.div>
       </motion.div>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import type { Engine, Filters, Platform } from "@/types/game";
-import { ENGINE_LABEL, PLATFORM_LABEL } from "@/types/game";
+import { engineLabel, PLATFORM_LABEL } from "@/types/game";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,7 +14,7 @@ const TAG_PREVIEW = 12;
 interface FilterSidebarProps {
   filters: Filters;
   platformCounts: Record<Platform, number>;
-  engineCounts: Record<Engine, number>;
+  engineCounts: Record<string, number>;
   tagCounts: Record<string, number>;
   allTags: string[];
   activeCount: number;
@@ -86,7 +86,10 @@ export function FilterSidebar({
   onClearAll,
 }: FilterSidebarProps) {
   const platforms = Object.keys(PLATFORM_LABEL) as Platform[];
-  const engines = Object.keys(ENGINE_LABEL) as Engine[];
+  // 引擎列表由库里实际出现的值决定（按条目数降序），未登记的新引擎也能被筛到
+  const engines = Object.keys(engineCounts).sort(
+    (a, b) => (engineCounts[b] ?? 0) - (engineCounts[a] ?? 0),
+  );
   // 标签只显示库里真实出现过的，按出现次数排序；默认只露 12 个，避免侧栏变成一堵墙
   const [showAllTags, setShowAllTags] = useState(false);
   const allVisibleTags = allTags
@@ -135,10 +138,10 @@ export function FilterSidebar({
                 <CheckRow
                   key={e}
                   id={`engine-${e}`}
-                  label={ENGINE_LABEL[e]}
+                  label={engineLabel(e)}
                   count={engineCounts[e] ?? 0}
-                  checked={filters.engines.includes(e)}
-                  onCheckedChange={() => onToggleEngine(e)}
+                  checked={filters.engines.includes(e as Engine)}
+                  onCheckedChange={() => onToggleEngine(e as Engine)}
                 />
               ))}
             </div>

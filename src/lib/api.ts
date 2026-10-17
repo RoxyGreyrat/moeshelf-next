@@ -15,3 +15,24 @@ export function listGames(): Promise<Game[]> {
 export function addDummyGame(): Promise<number> {
   return invoke<number>("add_dummy_game");
 }
+
+/** 旧库默认位置（MoeShelf 2.1.0 活库，与 Rust 侧 DEFAULT_LEGACY_DIR 保持一致） */
+export const DEFAULT_LEGACY_DIR = String.raw`E:\moeshelf\moeshelf-build-2.1.0\data`;
+
+export interface MigrateReport {
+  legacyDir: string;
+  snapshotDir: string;
+  gamesScanned: number;
+  skippedFixture: number;
+  imported: number;
+  withMetadata: number;
+  withoutMetadata: number;
+  playtimeImported: number;
+  overridesApplied: number;
+  warnings: string[];
+}
+
+/** 从旧库一次性迁移（旧库只读；全部 INSERT OR REPLACE，可重复执行） */
+export function migrateLegacy(legacyDir?: string): Promise<MigrateReport> {
+  return invoke<MigrateReport>("migrate_legacy", { legacyDir });
+}

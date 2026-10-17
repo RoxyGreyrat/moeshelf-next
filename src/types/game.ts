@@ -12,6 +12,7 @@ export type Engine =
   | "bgi"
   | "renpy"
   | "unity"
+  | "catsystem2"
   /** 扫描器认不出来的引擎。真实数据里一定有，不能省 */
   | "unknown";
 
@@ -71,8 +72,17 @@ export const ENGINE_LABEL: Record<Engine, string> = {
   bgi: "BGI",
   renpy: "Ren'Py",
   unity: "Unity",
+  catsystem2: "CatSystem2",
   unknown: "未识别",
 };
+
+/**
+ * 引擎显示名。数据库里可能出现这里没登记的新引擎（真实数据里已经出现过 catsystem2），
+ * 直接查表会得到 undefined、界面显示空白 —— 所以一律走这个函数，取不到就原样显示。
+ */
+export function engineLabel(engine: string): string {
+  return (ENGINE_LABEL as Record<string, string>)[engine] ?? engine;
+}
 
 export type GridState = "normal" | "loading" | "empty" | "error";
 

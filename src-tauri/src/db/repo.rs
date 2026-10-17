@@ -22,6 +22,17 @@ pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<Game>> {
     Ok(games)
 }
 
+/// 演示数据用的固定 id（与 insert_demo_games 里一致）。
+/// 迁移前必须先清掉它们，否则真实库里会混进 4 条假游戏。
+pub const DEMO_IDS: [&str; 4] = ["a1b2c3d4", "9c874865", "3f0d5a71", "b1e9f420"];
+
+/// 删除演示数据。返回删除行数。
+pub fn purge_demo_games(conn: &Connection) -> rusqlite::Result<usize> {
+    let placeholders = DEMO_IDS.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("DELETE FROM games WHERE id IN ({placeholders})");
+    conn.execute(&sql, rusqlite::params_from_iter(DEMO_IDS.iter()))
+}
+
 pub fn count_all(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0))
 }

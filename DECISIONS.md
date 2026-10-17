@@ -167,7 +167,7 @@ src-tauri/.cargo/config.toml  # 项目局部用的 sparse 索引（见第 7 节�
 | 布局重排（网格↔列表） | `layout="position"` + `spring(600, 33)`，ζ≈0.67，超调 ≈1.5px，290ms 落定 | `GameItem` / `GameGrid` |
 | 状态面板切换 | `AnimatePresence mode="wait"`，180ms | `GameGrid` |
 
-**四个必须记住的坑**：
+**八个必须记住的坑**：
 
 1. `<AnimatePresence initial={false}>` 会**禁用子元素的首次动画**。网格入场不动，就是被它吃掉的。
 2. 网格↔列表**不能**给两套视觉层加交叉淡化：旧海报在动画期间会按"新的卡片宽度"继续维持 2:3 比例，容器高度瞬间冲到 800px 再缩回，观感是"炸开再瘪下去"。
@@ -184,6 +184,29 @@ src-tauri/.cargo/config.toml  # 项目局部用的 sparse 索引（见第 7 节�
 
 **渐进降级**：`useReducedMotion()` 命中时入场位移与错峰归零，动画仍在但不位移。
 入场/悬停只动 `opacity` 与 `transform`，并挂 `will-change: transform`，全部走合成层。
+
+### 3.6 规模与性能（211 部真实数据后补）
+
+旧实现假设"库里只有十几部"，接真库后切视图直接掉到 **4 帧 / 900ms**。四层修复，按收益排序：
+
+| 层 | 做法 | 收益 |
+|---|---|---|
+| 1 | **封面从 SVG 换成 CSS**：每张卡原本是一棵内联 SVG（渐变 + pattern + clipPath + 水印），211 棵 SVG 树重建+栅格化是主因；改成 CSS 渐变层 + 一张 `<img>` | 最大 |
+| 2 | **分页渲染**：一次只挂 40 个真实节点，滚动到哨兵再追加 | 切视图成本降到 1/5 |
+| 3 | **大列表关掉 layout 投影**：>120 条时 `layout` 传 undefined，改用整块 180ms 淡入遮掉重排 | 去掉每帧 211 个包围盒计算 |
+| 4 | **切视图走 `startTransition`**：让浏览器先响应点击，再提交列表 | 点击不再"粘手" |
+
+**实测（211 条，无头浏览器软件渲染）**
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 900ms 内帧数 | 4 | 46 |
+| p50 帧耗时 | 183ms | **16.7ms（60fps）** |
+| 最差帧 | 233ms | 50~66ms |
+| 超过 20ms 的帧 | 3~4（连续） | 2~3（单次） |
+
+**阈值常量**在 `GameGrid.tsx` 顶部：`LAYOUT_ANIM_LIMIT=120`、`ENTRANCE_LIMIT=36`、`PAGE_SIZE=40`。
+真的做到几千部时不要继续调这些常量，应该上虚拟滚动（只渲染视口内行），这一轮没做。
 
 ---
 
@@ -300,6 +323,18 @@ filters          // { platforms, engines, tags }
 5. **sonner 默认依赖 `next-themes`**：Vite 项目没有 ThemeProvider，已删依赖并把 `theme` 固定为 `"light"`。
 6. **悬停/选中被滚动容器切边**：`overflow-y-auto` 的滚动区没有顶部内边距时，卡片上浮 4px + 放大 1.04（顶部再外扩约 4.5px）+ 选中外框 3px，会**超出容器 8.5px 被硬切**，圆角和边框直接消失。
    滚动区必须留 `pt-6`（24px）的呼吸空间；只给 `pb` 不够。判断方法：量 `card.getBoundingClientRect().top` 与滚动容器 `top` 的差值，静止时应 ≥ 10px。
+7. **右侧详情面板"显示不全"（内容被推出窗口）**：Radix `ScrollArea` 会在 viewport 里插入一个
+   `display: table; min-width: 100%` 的包裹 div。table 按 max-content 撑开，遇到长路径
+   （`E:\galgame\ま〜まれぇど\…\ststeaddy.exe`）时内层涨到 **379px**，面板只有 **320px**，
+   多出来的部分被推到窗口外 —— 表现就是字段值整列看不见。
+   修复：`src/index.css` 里强制该包裹 div `display:block; width:100%; min-width:0`（带 `!important` 才压得住内联样式）。
+   判断方法：`aside.getBoundingClientRect().width` 与 `scrollAreaViewport.firstElementChild` 的宽度是否相等。
+8. **`IntersectionObserver` 在 `AnimatePresence mode="wait"` 里挂不上**：网格被延迟挂载，
+   `useEffect` 执行时 `ref.current` 还是 null，而依赖又不再变化 → 观察器永远不会 attach，滚动加载失效。
+   修复：改用 **callback ref**（节点出现的那一刻创建观察器），并用 `useRef` 保存 `games.length` 供回调读取。
+9. **中文简介"不见了"其实不是数据问题**：迁移后 `cn_description` 填充率 211/211，
+   是详情面板只渲染了英文字段 `description`。显示与编辑都改成"中文优先，没有中文才退回英文"，
+   写回时也写回原来那个字段（有中文就更新 `cnDescription`，否则更新 `description`）。
 
 ---
 

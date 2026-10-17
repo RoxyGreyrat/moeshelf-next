@@ -1,3 +1,6 @@
+pub mod cover_cache;
+pub mod engine_probe;
+pub mod migrate;
 pub mod repo;
 pub mod schema;
 
