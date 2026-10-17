@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Loader2,
   Lock,
   MousePointerClick,
   Pencil,
@@ -32,6 +33,8 @@ interface DetailPanelProps {
   game: Game | null;
   multiCount: number;
   editing: boolean;
+  /** 保存请求正在飞（按钮转圈 + 禁用，防止连点写出两次） */
+  saving: boolean;
   playing: boolean;
   onStartEdit: () => void;
   onCancelEdit: () => void;
@@ -119,6 +122,7 @@ export function DetailPanel({
   game,
   multiCount,
   editing,
+  saving,
   playing,
   onStartEdit,
   onCancelEdit,
@@ -172,11 +176,19 @@ export function DetailPanel({
     if (!Number.isNaN(rating) && rating >= 0 && rating <= 10 && rating !== game.rating)
       patch.rating = rating;
 
-    const tags = draft.tags
-      .split(/[、,，\s]+/)
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (tags.join("|") !== game.tags.join("|")) patch.tags = tags;
+    // 标签：**先比原始字符串，再解析**。
+    //
+    // 两个坑都在这里：
+    // 1. 不能按空白拆 —— VNDB 的标签大量是英文多词短语（"White Haired Heroine"），
+    //    按空格拆会把一个标签拆成三个单词写回库里，属于不可逆的数据损坏。
+    // 2. 必须先判断"用户到底改没改"。只要走了"解析后再比较"，任何解析差异
+    //    都会被当成改动写回库 —— 上面那个坑就是这么被触发出来的。
+    if (draft.tags !== game.tags.join("、")) {
+      patch.tags = draft.tags
+        .split(/[、,，]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
 
     // 简介写回原来的位置：本来有中文简介就更新中文，否则更新英文字段
     const sourceCn = game.cnDescription?.trim();
@@ -380,13 +392,22 @@ export function DetailPanel({
       <footer className="shrink-0 space-y-2 border-t border-border p-3">
         {editing ? (
           <div className="flex gap-2">
-            <Button onClick={submit} className="h-9 flex-1 gap-1.5">
-              <Save className="size-4" />
-              保存并锁定
+            <Button
+              onClick={submit}
+              disabled={saving}
+              className="h-9 flex-1 gap-1.5"
+            >
+              {saving ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              {saving ? "保存中…" : "保存并锁定"}
             </Button>
             <Button
               variant="outline"
               onClick={onCancelEdit}
+              disabled={saving}
               className="h-9 gap-1.5"
             >
               <X className="size-4" />

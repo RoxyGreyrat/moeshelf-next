@@ -11,6 +11,46 @@ export function listGames(): Promise<Game[]> {
   return invoke<Game[]>("list_games");
 }
 
+/**
+ * 一次编辑提交的增量补丁：**只放改动过的字段**。
+ * 缺省的字段后端不会碰，"整行覆盖"会把这些字段冲成空值。
+ */
+export type GamePatch = Partial<
+  Pick<
+    Game,
+    | "title"
+    | "titleCn"
+    | "originalTitle"
+    | "developer"
+    | "released"
+    | "engine"
+    | "platform"
+    | "tags"
+    | "rating"
+    | "ratingSource"
+    | "description"
+    | "cnDescription"
+    | "coverUrl"
+    | "launchExe"
+    | "completed"
+    | "vndbId"
+  >
+>;
+
+/**
+ * 保存一次编辑。返回更新后从库里重新读出来的整行。
+ *
+ * `lock` 默认 true：改过的字段会并入 `locked_fields`，界面上显示小锁，
+ * 以后刮削不会覆盖人工修改。
+ */
+export function updateGame(
+  id: string,
+  patch: GamePatch,
+  lock = true,
+): Promise<Game> {
+  return invoke<Game>("update_game", { id, patch, lock });
+}
+
 /** 插入 4 条演示数据，返回插入后的总行数（重复调用不会重复插入） */
 export function addDummyGame(): Promise<number> {
   return invoke<number>("add_dummy_game");

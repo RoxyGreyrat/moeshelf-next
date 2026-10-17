@@ -13,6 +13,9 @@ export type Engine =
   | "renpy"
   | "unity"
   | "catsystem2"
+  /** 旧库真实数据里出现过、但还没做指纹识别的引擎 */
+  | "yuris"
+  | "advhd"
   /** 扫描器认不出来的引擎。真实数据里一定有，不能省 */
   | "unknown";
 
@@ -73,6 +76,8 @@ export const ENGINE_LABEL: Record<Engine, string> = {
   renpy: "Ren'Py",
   unity: "Unity",
   catsystem2: "CatSystem2",
+  yuris: "YURIS",
+  advhd: "AdvHD",
   unknown: "未识别",
 };
 

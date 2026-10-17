@@ -39,6 +39,70 @@ pub const GAME_COLUMNS: &str = "id, path_hash, title, title_cn, original_title, 
      cover_url, launch_exe, folder_path, file_count, match_score, completed, first_seen_at, \
      locked_fields, vndb_id";
 
+/// 一次编辑提交的增量补丁。
+///
+/// 全部字段都是 `Option`：**缺省 = 不改这一列**，前端只需要传改动过的字段。
+/// 这样既避免了"整行覆盖"把并发改动冲掉，也让 SQL 只更新真正变动的列。
+///
+/// 字段名与前端 `Partial<Game>` 的 camelCase 完全对应（`titleCn` / `cnDescription` …），
+/// 前端不需要做任何名字转换。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GamePatch {
+    pub title: Option<String>,
+    pub title_cn: Option<String>,
+    pub original_title: Option<String>,
+    pub developer: Option<String>,
+    /// YYYY-MM-DD
+    pub released: Option<String>,
+    pub engine: Option<String>,
+    pub platform: Option<String>,
+    pub tags: Option<Vec<String>>,
+    /// 0~10
+    pub rating: Option<f64>,
+    pub rating_source: Option<String>,
+    pub description: Option<String>,
+    pub cn_description: Option<String>,
+    pub cover_url: Option<String>,
+    pub launch_exe: Option<String>,
+    pub completed: Option<bool>,
+    pub vndb_id: Option<String>,
+}
+
+impl GamePatch {
+    /// 写入前的兜底校验。前端已经校验过一遍，这里再拦一次 ——
+    /// 因为命令层是公开入口，不能假设调用方一定是自己的界面。
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(t) = &self.title_cn {
+            if t.trim().is_empty() {
+                return Err("中文标题不能为空".to_string());
+            }
+        }
+        if let Some(r) = &self.released {
+            if !r.is_empty() && !is_iso_date(r) {
+                return Err(format!("发售日格式应为 YYYY-MM-DD，收到：{r}"));
+            }
+        }
+        if let Some(v) = self.rating {
+            if !(0.0..=10.0).contains(&v) {
+                return Err(format!("评分必须在 0~10 之间，收到：{v}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 只认 `YYYY-MM-DD`，其余一律拒绝（空串表示"清空"，由调用方另行判断）
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
 fn json_vec(raw: String) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
 }
@@ -75,5 +139,63 @@ impl Game {
             locked_fields: json_vec(locked_raw),
             vndb_id: row.get("vndb_id")?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前端发来的就是 `Partial<Game>` 的 camelCase 键。
+    /// 这条测试锁住"前端字段名 ↔ Rust 字段名"的约定：
+    /// 谁把 `rename_all` 删了、或者改了某个字段名，这里立刻红。
+    #[test]
+    fn patch_deserializes_frontend_camel_case_payload() {
+        let json = r#"{
+            "titleCn": "千恋＊万花",
+            "developer": "Yuzusoft",
+            "released": "2016-07-29",
+            "engine": "kirikiri",
+            "tags": ["柚子社", "废萌"],
+            "rating": 8.8,
+            "cnDescription": "在一座连公交都不通的深山里……"
+        }"#;
+        let p: GamePatch = serde_json::from_str(json).expect("反序列化失败");
+        assert_eq!(p.title_cn.as_deref(), Some("千恋＊万花"));
+        assert_eq!(p.developer.as_deref(), Some("Yuzusoft"));
+        assert_eq!(p.engine.as_deref(), Some("kirikiri"));
+        assert_eq!(p.rating, Some(8.8));
+        assert_eq!(p.tags.as_deref(), Some(&["柚子社".to_string(), "废萌".to_string()][..]));
+        // 没传的字段必须是 None —— 否则 update_game 会把它们覆盖成空
+        assert!(p.title.is_none());
+        assert!(p.original_title.is_none());
+        assert!(p.description.is_none());
+        assert!(p.launch_exe.is_none());
+        assert!(p.cover_url.is_none());
+    }
+
+    #[test]
+    fn empty_patch_is_all_none() {
+        let p: GamePatch = serde_json::from_str("{}").expect("空对象应该能解析");
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_catches_obvious_garbage() {
+        let mut p = GamePatch::default();
+        p.rating = Some(11.5);
+        assert!(p.validate().is_err());
+
+        let mut p = GamePatch::default();
+        p.released = Some("2016-7-29".to_string());
+        assert!(p.validate().is_err());
+
+        let mut p = GamePatch::default();
+        p.released = Some(String::new()); // 清空发售日是允许的
+        assert!(p.validate().is_ok());
+
+        let mut p = GamePatch::default();
+        p.title_cn = Some("  ".to_string());
+        assert!(p.validate().is_err());
     }
 }

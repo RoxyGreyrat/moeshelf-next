@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import { addDummyGame, DEFAULT_LEGACY_DIR, listGames, migrateLegacy } from "@/lib/api";
+import {
+  addDummyGame,
+  DEFAULT_LEGACY_DIR,
+  listGames,
+  migrateLegacy,
+  updateGame,
+} from "@/lib/api";
 import type {
   Filters,
   Game,
@@ -43,6 +49,7 @@ export default function App() {
   const [cursorId, setCursorId] = useState<string | null>(null);
 
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [columns, setColumns] = useState(4);
@@ -233,7 +240,7 @@ export default function App() {
   }, [activeGame]);
 
   const handleSave = useCallback(
-    (patch: Partial<Game>) => {
+    async (patch: Partial<Game>) => {
       if (!activeGame) return;
       const keys = Object.keys(patch);
       if (keys.length === 0) {
@@ -241,23 +248,24 @@ export default function App() {
         toast("没有检测到改动");
         return;
       }
-      setGames((prev) =>
-        prev.map((g) =>
-          g.id === activeGame.id
-            ? {
-                ...g,
-                ...patch,
-                lockedFields: Array.from(
-                  new Set([...g.lockedFields, ...keys]),
-                ),
-              }
-            : g,
-        ),
-      );
-      setEditing(false);
-      toast.success(`已保存 ${keys.length} 个字段`, {
-        description: "这些字段已被锁定，下次刮削不会覆盖。",
-      });
+
+      setSaving(true);
+      try {
+        // 真正落库：返回的是 UPDATE 之后从库里重新 SELECT 出来的整行
+        const updated = await updateGame(activeGame.id, patch);
+        // 只替换这一条，不整表重拉 —— 重拉会清空选中，详情面板会跟着关掉
+        setGames((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
+        setEditing(false);
+        toast.success(`已保存 ${keys.length} 个字段`, {
+          description: `已写入数据库，${keys.length} 个字段已锁定，刮削不会覆盖。`,
+        });
+      } catch (err) {
+        console.error("[update_game]", err);
+        // 保存失败保持编辑态，避免用户输入被吞掉
+        toast.error("保存失败", { description: String(err) });
+      } finally {
+        setSaving(false);
+      }
     },
     [activeGame],
   );
@@ -458,6 +466,7 @@ export default function App() {
             game={activeGame}
             multiCount={selectMode === "multi" ? selectedIds.length : 1}
             editing={editing}
+            saving={saving}
             playing={playing}
             onStartEdit={() => setEditing(true)}
             onCancelEdit={() => setEditing(false)}

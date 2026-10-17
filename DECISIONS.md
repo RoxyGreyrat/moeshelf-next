@@ -167,7 +167,7 @@ src-tauri/.cargo/config.toml  # 项目局部用的 sparse 索引（见第 7 节�
 | 布局重排（网格↔列表） | `layout="position"` + `spring(600, 33)`，ζ≈0.67，超调 ≈1.5px，290ms 落定 | `GameItem` / `GameGrid` |
 | 状态面板切换 | `AnimatePresence mode="wait"`，180ms | `GameGrid` |
 
-**八个必须记住的坑**：
+**十个必须记住的坑**：
 
 1. `<AnimatePresence initial={false}>` 会**禁用子元素的首次动画**。网格入场不动，就是被它吃掉的。
 2. 网格↔列表**不能**给两套视觉层加交叉淡化：旧海报在动画期间会按"新的卡片宽度"继续维持 2:3 比例，容器高度瞬间冲到 800px 再缩回，观感是"炸开再瘪下去"。
@@ -335,10 +335,42 @@ filters          // { platforms, engines, tags }
 9. **中文简介"不见了"其实不是数据问题**：迁移后 `cn_description` 填充率 211/211，
    是详情面板只渲染了英文字段 `description`。显示与编辑都改成"中文优先，没有中文才退回英文"，
    写回时也写回原来那个字段（有中文就更新 `cnDescription`，否则更新 `description`）。
+10. **标签编辑按空格拆分，会把多词标签拆碎写回库（数据损坏）**：
+   旧写法是 `draft.tags.split(/[、,，\s]+/)` 再和 `game.tags.join("|")` 比较。
+   VNDB 的标签大量是英文短语（`White Haired Heroine` / `Science Fiction` / `Male Protagonist`），
+   按 `\s` 拆会变成 `White`/`Haired`/`Heroine` 三个独立标签，然后因为 join 结果不同被判定成"用户改了"，
+   直接 UPDATE 进库 —— 一次保存就永久破坏了这部游戏的标签。
+   修复两点，缺一不可：
+   - **先比原始字符串**（`draft.tags !== game.tags.join("、")`），没动过就一个字节都不写；
+   - 分隔符只认 `、 , ，`，**绝不包含 `\s`**。
+   注意：这是"文本串回填"这种编辑方式的固有风险，长期应换成 chip 增删编辑器。
 
 ---
 
-## 8. 本期明确没做的事
+## 8. 保存落库（`update_game`）的设计取舍
+
+编辑器提交的是 **`GamePatch`（增量补丁）**，不是整行。理由有三条：
+
+1. **不覆盖没碰过的字段**。整行 `UPDATE` 会把 `first_seen_at`、`folder_path`、`file_count`
+   这些本轮根本没在界面上出现的列写回空值 —— 一次编辑就能把扫描结果抹掉。
+2. **锁定的语义天然对齐**。"改过的字段才锁定"，补丁的 key 集合就是锁定名单，不需要前端再传一遍。
+3. **SQL 可以只 `SET` 真正变动的列**，其余列连写都不写。
+
+命令返回**更新后重新 `SELECT` 出来的整行**，前端用它替换本地那一条，**不整表重拉**。
+理由：`reload()` 会清空 `selectedIds` 与 `cursorId`，保存完详情面板会直接关掉，用户以为出错了。
+"真的落盘"这件事由两条来保证：Rust 侧 `update_survives_reopen` 单测（重开连接读回），
+和前端 F5 / 关掉重开（重新走 `list_games`）。
+
+其它约定：
+- `locked_fields` 里记 **camelCase**（`titleCn`/`coverUrl`），与旧库迁移过来的数据保持一致；
+  记 snake_case 会让同一列出现两种写法。
+- `updated_at` 由 SQLite 的 `strftime` 写，不引日期库。
+- 校验放在 `GamePatch::validate()`：标题非空、发售日 `YYYY-MM-DD`（空串允许表示清空）、评分 0~10。
+  命令层是公开入口，不能假设调用方一定是自己的界面。
+
+---
+
+## 9. 本期明确没做的事
 
 - 没有数据库写入、没有真实扫描、没有网络请求
 - 没有路由、没有状态管理库、没有暗色模式
@@ -347,7 +379,7 @@ filters          // { platforms, engines, tags }
 
 ---
 
-## 9. 下一步（B 阶段）
+## 10. 下一步（B 阶段）
 
 1. `src-tauri` 引入 `rusqlite`，建 `games / playtime / scan_roots / game_sources` 表（字段见第 2.2 节）
 2. 写一次性迁移：读旧库 → 写新库，`path_hash` 原样搬（保住封面缓存可用），跳过 4 条测试夹具

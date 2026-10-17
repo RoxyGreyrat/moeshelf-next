@@ -8,14 +8,16 @@
 
 ## 0. 一句话现状
 
-**B 阶段 Step 1 已通**：SQLite 建表完成、Rust 命令可读写、前端已改为从数据库取数据；但**表里还没有真实数据**（旧库迁移尚未开始）。
+**B 阶段主体已通**：211 部真实数据已从旧库迁进 SQLite、封面通过 `cover://` 协议直读旧缓存（211/211 命中）、
+编辑保存已能真正落库并锁定字段、211 部下切视图已从 4 帧优化到 46 帧。
+**离"能日常用"只差：目录扫描器、启动器、补丁管理。**
 
 - 项目路径：`E:\deskbox\galgame-manager`
 - 启动：`cd E:\deskbox\galgame-manager && npm run tauri dev`
 - 构建：`npm run build`（tsc + vite，零错误）
-- Rust 测试：`cd src-tauri && env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy cargo test`（2 passed）
-- 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v1，5 张表，33 列）
-- git：已初始化并完成首次提交 `199353f A阶段完工：静态主界面与高级动效基线`
+- Rust 测试：`cd src-tauri && env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy cargo test`（26 passed / 2 ignored）
+- 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v1，5 张表，33 列，211 行）
+- git：`c9786a6 feat(B2/B3): 旧库迁移 + 封面接入 + 大库性能优化`
 
 ---
 
@@ -58,15 +60,17 @@
 **触发方式**：跑 `npm run tauri dev` → 点左下角「状态调试」里的**迁移旧库（一次性）** → 等 1 秒 → Toast 报数字。
 迁移**不**在启动时自动跑，必须手动点，避免每次开应用都覆盖手工修改。
 
-### 明确留下的尾巴（**都还没做**）
+### 明确留下的尾巴
 
 1. **详情面板切换游戏时没有内容过渡**——仍是瞬间替换，需要 `AnimatePresence mode="wait"`。
 2. **侧栏、详情面板本身没有包成 `motion.div`**——目前只有卡片/网格有动效。
 3. **左下角调试面板展开/收起仍是瞬间切换**——需要弹簧缩放。
 4. **调试浮层遮挡问题**——固定在左下角，在列表视图会盖住左侧几行的缩略图（不是 bug，但难看；产品负责人已知晓，方案未定）。
-5. **编辑保存还没落库**——`update_game` 命令未写，DetailPanel 的"保存并锁定"目前只改内存。
-6. **封面还是渐变占位**——`coverUrl` 已在表里，但还没接本地缓存。
-7. **`add_dummy_game` 与"插入测试数据"按钮是开发期脚手架**，接真实扫描后必须删掉。
+5. ~~编辑保存还没落库~~ → ✅ 2026-10-17 已实现 `update_game`，编辑→保存→刷新后仍在。
+6. ~~封面还是渐变占位~~ → ✅ 2026-10-17 已接 `cover://` 协议，211/211 命中旧缓存。
+7. **`add_dummy_game` 与"插入测试数据"按钮是开发期脚手架**——`update_game` 落库跑通后即可删除（下一步就做）。
+8. **`engine_probe` 的指纹识别还没接进正式流程**——目前只在迁移时补了 31 部，unknown 仍有 80 部。
+9. **标签编辑是"文本串回填"**——UI 上没有增删胶囊的交互，且多词标签依赖 `、` 分隔。长期应改成 chip 编辑器。
 
 ---
 
@@ -295,7 +299,7 @@ vndbId?
 
 ---
 
-## 7. B 阶段开发计划（B1 已完成，从 B2 继续）
+## 7. B 阶段开发计划（B1–B4 已完成，剩 B5 可选加分项）
 
 目标：**把旧库 211 条真实数据迁进来，复用 885 MB 封面缓存，编辑能落库。**
 
@@ -344,37 +348,51 @@ playtime       56    overrides_applied 186
 - 人工修改（旧 `settings.json` 的 7 张 `*Map`）→ 写进 `locked_fields` + 对应列
 - 迁移脚本必须**只读打开旧库**（`mode=ro`），且先在副本上跑通
 
-### B3. Tauri 命令（`list_games` 已完成，剩两个）
+### B3. Tauri 命令 —— ✅ 已完成 2026-10-17
 
 ```rust
-list_games()   -> Vec<Game>          // ✅ 已实现
-get_game(id)   -> Option<Game>       // ⬜ 待做（详情面板单独刷新时用）
-update_game(id, patch) -> ()         // ⬜ 待做（保存并锁定落库 + 写 locked_fields）
+list_games()                     -> Vec<Game>   // 已实现
+get_game(id)                     -> Option<Game> // 已实现为 repo::get_one（未暴露成命令，暂无调用方）
+update_game(id, patch, lock)     -> Game         // ✅ 已实现
 ```
 
-`Game` 结构体已加 `#[serde(rename_all = "camelCase")]`，与 `src/types/game.ts` 一一对应，前端不做二次映射。
+`update_game` 的设计要点（**改之前必读**）：
 
-### B4. 前端接真数据（已完成 1、4，剩 2、3）
+- 入参 `patch: GamePatch` 的**每个字段都是 `Option`，缺省 = 不改这一列**。
+  前端只传改动过的字段，因此不会把 `first_seen_at`、`folder_path` 这类字段覆盖成空。
+- `lock` 默认 true：把本次改动的列名并进 `locked_fields`（去重），这就是界面上的小锁。
+  记录的字段名是 **camelCase**（`titleCn` / `coverUrl`），与旧库迁移过来的数据保持一致。
+- 列名只在 `repo.rs` 的 `LOCK_NAMES` 白名单里取，SQL 的列名永远不来自外部输入。
+- 写完 `updated_at = strftime(...)`，然后**重新 SELECT 整行返回**。
+  前端拿返回值替换本地那一条，不整表重拉 —— 整表重拉会清空选中，详情面板会跟着关掉。
+- 校验在 `GamePatch::validate()`：中文标题不可为空、发售日必须 `YYYY-MM-DD`（空串允许）、评分 0~10。
+
+命令参数名刻意都用**单个英文单词**（`id` / `patch` / `lock`），避开 Tauri 参数名 camelCase↔snake_case 转换的不确定性。
+
+### B4. 前端接真数据 —— ✅ 已完成
 
 1. ✅ `App.tsx`：启动 `useEffect` → `list_games`，保留 loading/错误态。
-2. ⬜ `DetailPanel` 保存 → `invoke("update_game")`，成功后本地合并（现在只改内存，关掉应用就丢）。
-3. ⬜ `CoverArt` → 真封面：`convertFileSrc(cachePath)` 指向旧 `cache/images/{hash}.bin`，
-   或把缓存目录整体复制到新数据目录（**产品负责人要求复用，不许重新下载**）。
+2. ✅ `DetailPanel` 保存 → `update_game`，成功后用返回行替换本地那一条；保存期间按钮转圈并禁用。
+   保存失败**保持编辑态**，不吞用户输入。
+3. ✅ `CoverArt` → 真封面：`cover://` 自定义协议直读旧缓存（方案 A，零拷贝），失败回落 CSS 渐变。
 4. ✅ 标签由数据动态汇总（`ALL_TAGS` 已删）。
 
-### B5. 封面对接方案（二选一，需产品负责人拍板）
+### B5. 封面对接 —— ✅ 方案 A 已落地，方案 B 仍可选
 
-- 方案 A（推荐）：读取时直接用旧路径 `E:\moeshelf\moeshelf-build-2.1.0\data\cache\images\`，零拷贝但依赖旧目录存在。
-- 方案 B：迁移时把 885 MB 复制/移动进新数据目录，之后可删旧项目。
+- 方案 A（**已采用**）：`cover://<8位hex>` 协议读 `E:\moeshelf\moeshelf-build-2.1.0\data\cache\images\{hash}.bin`，
+  按旁挂 `.json` 里的 contentType 设响应头。零拷贝、零下载，211/211 命中。
+  **代价：旧目录不能删。**
+- 方案 B（⬜ 未做，可选加分项）：写一个"搬移封面缓存"命令，把 885 MB 复制进新数据目录，之后可安全删除旧项目。
+  注意是**按需复制**（只搬库里 cover_url 命中的那 211 个文件，约 60 MB），不是整目录 10,349 个文件。
 
-### B6. B 阶段验收标准
+### B6. B 阶段验收标准 —— 进度
 
-- [ ] 冷启动窗口里显示 **211 部**真实游戏，标题/会社/发售日/引擎/标签齐全
-- [ ] 封面能显示（不是渐变占位图）
-- [ ] 左侧筛选的引擎/标签计数与真实数据一致
-- [ ] 改一个字段保存 → 关掉应用重开 → 修改仍在，且带小锁
-- [ ] 旧库文件时间戳**未被修改**（`moeshelf.db` 仍是 2026-10-08 22:16）
-- [ ] `npm run build` 零错误
+- [x] 冷启动窗口里显示 **211 部**真实游戏，标题/会社/发售日/引擎/标签齐全
+- [x] 封面能显示（不是渐变占位图）
+- [x] 左侧筛选的引擎/标签计数与真实数据一致
+- [x] 改一个字段保存 → 刷新 / 关掉重开 → 修改仍在，且带小锁
+- [x] 旧库文件时间戳**未被修改**（`moeshelf.db` 仍是 2026-10-08 22:16）
+- [x] `npm run build` 零错误
 
 ---
 

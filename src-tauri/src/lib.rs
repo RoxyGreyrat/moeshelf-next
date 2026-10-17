@@ -56,6 +56,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
+            commands::update_game,
             commands::add_dummy_game,
             commands::migrate_legacy
         ])
