@@ -385,3 +385,42 @@ filters          // { platforms, engines, tags }
 2. 写一次性迁移：读旧库 → 写新库，`path_hash` 原样搬（保住封面缓存可用），跳过 4 条测试夹具
 3. `list_games` 命令 + 前端替换 `SEED_GAMES`
 4. 保留 `StateSwitcher` 到 B 阶段结束，联调四态用得上
+
+---
+
+## 11. 目录扫描器的判定规则（C 阶段）
+
+规则整体移植自旧版 `src/lib/scan.ts`，但改了一处**必须改**的地方（见下）。三条判定缺一不可：
+
+| 层 | 作用 | 少了的后果 |
+|---|---|---|
+| 扩展名加权 | `.xp3`(6) / `.exe`(4) / `.arc`(2) / `.dat`(1) 累加 | 无法区分"有数据"和"只有程序" |
+| **另有实锤** | 有数据文件 / 数据 ≥5MB / 子目录有 ≥5MB / 命中引擎特征 | `foo.exe + helper.dll + 说明.txt` 会被收成游戏 |
+| **容器兜底** | 主程序在子目录时把父目录认成一部游戏 | `Game/bin/game.exe` + `Game/data/data.xp3` 会被拆成 `bin`、`data` 两条假条目 |
+
+### 为什么改"容器"这一条（旧版没有的判据）
+
+旧版只要"子树里只有一个可启动程序 + 有数据文件"就认定父目录是容器。
+真机上这会把**会社目录**收成游戏：`E:/galgame/nekonekosoft/作品/game.exe` 里只有一个 exe，
+于是 `nekonekosoft` 整条变成一部叫会社名的假游戏 —— 第一次扫描时这类假条目有 **31 条**
+（`ALcot`、`DEVGRU-P`、`Others`、`nekonekosoft` …）。
+
+补的判据：**看程序和数据的相对位置**
+- 数据所在目录是程序所在目录的**同层或子层**（顶层路径段相同）→ 那个子目录自己是完整游戏 → 不是容器，继续下钻
+- 两者在不同顶层段（`bin/` 与 `data/`）→ 才是"被拆开的游戏" → 父目录是容器
+
+修正效果（真机实测，新增条目数）：**31 → 20**（加"位置"判据）**→ 18**（再加"临时/python 目录硬跳过"）。
+剩下 18 条里约 5~6 条仍是工具目录（`GARbro` / `FreeMoteToolkit` / `lz4` / `Zcode` …），
+它们自身带 `.xp3` 或数据文件，"像游戏"这件事规则层面无从分辨，留给用户级忽略清单。
+
+### 其它必须守住的点
+
+- **`path_hash` 必须按 UTF-16 码元迭代**（JS `charCodeAt` 语义），不是按码点。
+  中日文在 BMP 内两者一致，遇到 emoji / 扩展区汉字会分叉。算错 = 已迁移的 211 部全部重复入库。
+- **`upsert_scanned` 冲突时只更新扫描事实**（`file_count` / `dir_size` / `match_score` / `folder_path`），
+  `title_cn` / `tags` / `rating` / `cover_url` 一律不动；`launch_exe` / `engine` 受 `locked_fields` 保护；
+  `engine` 只在原值为 `unknown` 时被覆盖（扫描器更保守，不能把识别结果扫回去）。
+- **进度事件必须节流**（100ms）。一本 200 部的库有上万次目录访问，不节流会把 webview 的消息队列打满，
+  进度条反而卡住。
+- **`State<Db>` 不能跨 `.await` 持有**（`MutexGuard` 不是 Send）。命令里用
+  `spawn_blocking` + `app.state::<Db>()` 在阻塞线程内现取。

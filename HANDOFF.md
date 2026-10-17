@@ -396,6 +396,47 @@ update_game(id, patch, lock)     -> Game         // ✅ 已实现
 
 ---
 
+## 7.5 C 阶段：目录扫描器（已完成 2026-10-17）
+
+**能力**：`scan_directory(root)` → 递归识别游戏目录 → 写库（新增 or 只刷新扫描事实）→ 边扫边发 `scan-progress` 事件。
+
+实现位置：
+- `src-tauri/src/db/scanner.rs` —— 全部规则（打分 / 实锤 / 容器 / 候选排序 / 统计）
+- `src-tauri/src/db/repo.rs::upsert_scanned` —— 幂等写库，受 `locked_fields` 保护
+- `src-tauri/src/commands.rs::scan_directory` —— `spawn_blocking` + 事务
+
+规则来源：旧版 `E:\moeshelf\moeshelf-src-latest\src\lib\scan.ts`（935 行），逐条移植并在注释里标了「为什么」。
+
+**真机实测（`E:\galgame`，只扫描不写库）**
+
+```
+扫 379 个目录 / 105.9s，识别 225 部
+与已迁移的 211 部比对：207 对上 / 18 新增 / 4 未扫到
+引擎  unknown 90 · kirikiri 61 · bgi 17 · artemis 16 · unity 13
+      siglus 12 · yuris 8 · renpy 4 · catsystem2 3 · advhd 1
+主程序判定比旧库更准：26 部
+```
+
+4 条「未扫到」的真相：3 条是**文件夹已改名/移动**（`Key\LOOPERS PLUS` → `LOOPERS` 等），
+扫描已用新路径重新认出；1 条 `smee\PureConnectFullHD` 是布局差异（见下方已知问题）。
+
+**已知问题（下一轮处理）**
+
+1. 18 条新增里约 6 条是工具目录：`GARbro`、`GARbro-Mod-1.0.1.2.0`、`FreeMoteToolkit`、
+   `lz4_win32_v1_9_3`、`Zcode`。它们本身带 `.xp3`/数据文件，规则上"像游戏"。
+   → 解法：用 `scan_roots.ignore_paths`（表里已建好）做用户级忽略清单，或加"工具名黑名单"。
+2. 容器布局取舍：`PureConnectFullHD\PURExCONNECT\game.exe` 这种，
+   旧库把**父目录**当游戏，新扫描器把**子目录**当游戏 → 重扫会多出一条。
+   当前选择保留子目录（更符合真实作品名），代价是少量重复。
+3. `unknown` 仍有 90 部（旧库 80）。扫描器的引擎判定比迁移时的 `engine_probe` 更保守，
+   且 `engine_probe` 在扫描路径里只在命中时才被调用。
+
+**下一步（C 阶段剩余）**：前端接 `scan_directory`
+- 顶栏「扫描文件夹」→ `tauri-plugin-dialog` 选目录 → 订阅 `scan-progress` → 进度条
+- 扫完 `reload()` + Toast 报「新增 N / 更新 M」
+
+---
+
 ## 8. 不许破坏的架构底线
 
 1. **Tauri v2 承载一切系统能力**。扫描/启动/进程跟踪/文件写入都在 Rust 命令层；前端不直接碰文件系统。
