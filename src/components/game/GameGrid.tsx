@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, FolderSearch, RotateCw, ScanLine } from "lucide-react";
+import { AlertTriangle, DatabaseZap, FolderSearch, RotateCw, ScanLine } from "lucide-react";
 import type { Game, GridState, ViewMode } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,6 +17,8 @@ interface GameGridProps {
   onSelect: (id: string) => void;
   onOpen: (id: string) => void;
   onScan: () => void;
+  /** 往 SQLite 插入演示数据（B 阶段联调用，正式扫描接入后删掉） */
+  onSeed: () => void;
   onRetry: () => void;
   onClearFilters: () => void;
   /** 把当前列数回报给上层，方向键上下移动要用 */
@@ -68,6 +70,7 @@ export function GameGrid({
   onSelect,
   onOpen,
   onScan,
+  onSeed,
   onRetry,
   onClearFilters,
   onColumnsChange,
@@ -135,10 +138,21 @@ export function GameGrid({
             title="这个书架还是空的"
             desc="选择一个游戏根目录，MoeShelf 会自动识别主程序、引擎和封面。"
             action={
-              <Button onClick={onScan} className="gap-1.5">
-                <ScanLine className="size-4" />
-                扫描文件夹
-              </Button>
+              <div className="flex flex-col items-center gap-2">
+                <Button onClick={onScan} className="gap-1.5">
+                  <ScanLine className="size-4" />
+                  扫描文件夹
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onSeed}
+                  className="gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                >
+                  <DatabaseZap className="size-3.5" />
+                  插入 4 条测试数据（开发用）
+                </Button>
+              </div>
             }
           />
         </motion.div>

@@ -2,18 +2,20 @@
 
 > 写给"下一个接手的人/下一个对话的 AI"。
 > 先读这份，再读 `DECISIONS.md`（决策理由）。两者冲突时以本文件的**现状**为准、以 DECISIONS 的**理由**为准。
-> 最后更新：2026-10-17 19:34
+> 最后更新：2026-10-17 19:45（B1 建表完成）
 
 ---
 
 ## 0. 一句话现状
 
-A 阶段收尾：**静态主界面已完成并通过截图验收，动效已换成 motion 并调过手感，但还没有任何数据库、没有真实数据、git 也还没初始化。**
+**B 阶段 Step 1 已通**：SQLite 建表完成、Rust 命令可读写、前端已改为从数据库取数据；但**表里还没有真实数据**（旧库迁移尚未开始）。
 
 - 项目路径：`E:\deskbox\galgame-manager`
 - 启动：`cd E:\deskbox\galgame-manager && npm run tauri dev`
-- 构建：`npm run build`（tsc + vite，当前零错误）
-- 产品负责人：不懂代码，按"每步停下等确认"的方式协作，验收靠点击界面，不看代码
+- 构建：`npm run build`（tsc + vite，零错误）
+- Rust 测试：`cd src-tauri && env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy cargo test`（2 passed）
+- 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v1，5 张表，33 列）
+- git：已初始化并完成首次提交 `199353f A阶段完工：静态主界面与高级动效基线`
 
 ---
 
@@ -30,14 +32,27 @@ A 阶段收尾：**静态主界面已完成并通过截图验收，动效已换�
 | 动效升级 motion | ✅ | 入场/悬停/按压/选中/布局重排全部换 motion |
 | 桌面窗口打开验证 | ✅ | 1440×900，产品负责人已确认"窗口 OK" |
 
+### B 阶段 Step 1 新增（2026-10-17 19:45）
+
+| 子任务 | 状态 | 说明 |
+|---|---|---|
+| git 初始化 + 首次提交 | ✅ | `199353f`，75 文件，无 node_modules/target/db 泄漏 |
+| rusqlite 接入 | ✅ | 0.40.2，`features=["bundled"]`（自带 SQLite 源码，不依赖 dll） |
+| 建表 `init_db` | ✅ | games(33 列) / playtime / playtime_sessions / scan_roots / game_sources，7 个索引，`user_version=1` |
+| 数据库位置 | ✅ | `src-tauri/data/moeshelf.db`（开发期）；打包后走 `%APPDATA%\com.moeshelf.next\data` |
+| `list_games` / `add_dummy_game` | ✅ | 命令层薄封装，SQL 在 `db/repo.rs`，有 2 个单测覆盖 |
+| 前端接 `list_games` | ✅ | 假数据文件 `src/data/games.ts` 已删除，标签由数据动态汇总 |
+| 旧数据迁移 | ⬜ | 下一步 |
+
 ### 明确留下的尾巴（**都还没做**）
 
 1. **详情面板切换游戏时没有内容过渡**——仍是瞬间替换，需要 `AnimatePresence mode="wait"`。
 2. **侧栏、详情面板本身没有包成 `motion.div`**——目前只有卡片/网格有动效。
 3. **左下角调试面板展开/收起仍是瞬间切换**——需要弹簧缩放。
 4. **调试浮层遮挡问题**——固定在左下角，在列表视图会盖住左侧几行的缩略图（不是 bug，但难看；产品负责人已知晓，方案未定）。
-5. **`git` 尚未初始化**——原计划"第 6 步 git 保护点"没执行。首次提交前应先落一个 `.gitignore` 检查。
-6. **真实数据一律没有**——`src/data/games.ts` 是手写的 12 条假数据。
+5. **编辑保存还没落库**——`update_game` 命令未写，DetailPanel 的"保存并锁定"目前只改内存。
+6. **封面还是渐变占位**——`coverUrl` 已在表里，但还没接本地缓存。
+7. **`add_dummy_game` 与"插入测试数据"按钮是开发期脚手架**，接真实扫描后必须删掉。
 
 ---
 
@@ -62,11 +77,10 @@ galgame-manager/
 │   ├── vite-env.d.ts
 │   │
 │   ├── types/
-│   │   └── game.ts               # ★ 数据模型（与未来 Rust 返回结构一对一）
-│   ├── data/
-│   │   └── games.ts              # 12 条假数据 + ALL_TAGS（B 阶段整体替换）
+│   │   └── game.ts               # ★ 数据模型（与 Rust 返回结构一对一）
 │   │
 │   ├── lib/
+│   │   ├── api.ts                # ★ 所有 invoke() 的唯一出口（listGames / addDummyGame）
 │   │   ├── motion.ts             # ★ 动效参数唯一来源（弹簧/错峰/位移）
 │   │   └── utils.ts              # shadcn 生成（注意：nova 组件实际用 npm 包 "cn"）
 │   │
@@ -94,18 +108,50 @@ galgame-manager/
 │           └── StateSwitcher.tsx # 左下角浮层，开发期专用（删一行即可移除）
 │
 └── src-tauri/
-    ├── Cargo.toml                # edition 2024；tauri 2 / serde 1
+    ├── Cargo.toml                # edition 2024；tauri 2 / serde 1 / rusqlite 0.40.2(bundled)
     ├── tauri.conf.json           # productName "MoeShelf Next"，1440×900，theme Light
     ├── build.rs
     ├── .cargo/config.toml        # ★ 项目局部 sparse 索引（不要删，见第 6 节坑 5）
     ├── capabilities/default.json
     ├── icons/
+    ├── data/                     # 开发期数据库（.gitignore 已忽略）
+    │   └── moeshelf.db
     └── src/
         ├── main.rs
-        └── lib.rs                # ⚠️ 只有一个模板自带的 greet 占位命令，B 阶段在这里加
+        ├── lib.rs                # 启动时 db::init + manage + 注册命令
+        ├── commands.rs           # ★ 命令层（薄壳：只做 State 取用与错误转换）
+        ├── models.rs             # ★ Game 结构体（serde camelCase）+ from_row
+        └── db/
+            ├── mod.rs            # 数据目录解析、open_at、schema 版本升级
+            ├── schema.rs         # ★ 建表 SQL（V1_DDL）+ SCHEMA_VERSION
+            └── repo.rs           # ★ SQL 实现：list_all / insert_demo_games / count_all + 单测
 ```
 
-**motion 相关新增文件（最近一轮）**：`src/lib/motion.ts`、`src/components/game/GameItem.tsx`。
+**最近两轮新增**：`src/lib/motion.ts`、`src/components/game/GameItem.tsx`（动效）；`src/lib/api.ts`、`src-tauri/src/{commands,models}.rs`、`src-tauri/src/db/*`（数据层）。
+
+---
+
+## 2.5 数据库现状（B1 交付物）
+
+**位置**：开发期 `src-tauri\data\moeshelf.db`；打包后 `%APPDATA%\com.moeshelf.next\data\moeshelf.db`。
+**已验证**：`user_version=1`、`journal_mode=wal`、5 张表、`games` 33 列、7 个 `idx_*` 索引。
+
+| 表 | 作用 |
+|---|---|
+| `games` | 主表。`id` 就是 8 位 path_hash，`engine` / `platform` 是独立列，`tags` / `locked_fields` 存 JSON 文本 |
+| `playtime` | 汇总（minutes / sessions / last_played），逻辑同旧库 |
+| `playtime_sessions` | 新增：按会话记账，旧库只有一个累计值 |
+| `scan_roots` | 新增：多根目录 + 各自开关/排除项，替代旧库单值 `rootPath` |
+| `game_sources` | 新增：多源原始 payload，某源挂了不丢数据 |
+
+**命令**（前端唯一入口 `src/lib/api.ts`）：
+
+```rust
+list_games()      -> Vec<Game>   // 按 first_seen_at DESC 排序，过滤 ignored=1
+add_dummy_game()  -> i64         // 插入 4 条演示数据（INSERT OR IGNORE，幂等）
+```
+
+⚠️ `add_dummy_game` 是脚手架，接真实扫描后与前端"插入测试数据"按钮一起删。
 
 ---
 
@@ -235,21 +281,20 @@ vndbId?
 
 ---
 
-## 7. B 阶段开发计划（下一步要干的事）
+## 7. B 阶段开发计划（B1 已完成，从 B2 继续）
 
-目标：**让界面读真数据**，把 `SEED_GAMES` 换成 `invoke("list_games")`，并把旧库 211 条迁进来、复用已下载的封面。
+目标：**把旧库 211 条真实数据迁进来，复用 885 MB 封面缓存，编辑能落库。**
 
-### B1. 数据层落地（Rust）
+### B1. 数据层落地（Rust）—— ✅ 已完成 2026-10-17
 
-1. `Cargo.toml` 加 `rusqlite = { version = "0.3x", features = ["bundled"] }`（`bundled` 避免依赖本机 sqlite）。
-2. 新建 `src-tauri/src/db/`：
-   - `mod.rs`：连接管理、`PRAGMA journal_mode=WAL`、`PRAGMA user_version`
-   - `schema.rs`：建表 SQL（`games` / `playtime` / `scan_roots` / `game_sources`）
-   - `migrate.rs`：`user_version` 版本迁移（替代旧库的 `migration_log` 表）
-3. 数据目录决策（**需先问产品负责人**）：`%APPDATA%\com.moeshelf.next\` 还是项目内 `data/`？
-   建议 APPDATA，避免 Program Files 写权限问题。
+- `rusqlite 0.40.2` + `features = ["bundled"]`
+- `src-tauri/src/db/{mod,schema,repo}.rs` 分工：连接/迁移、建表 SQL、SQL 实现
+- 数据目录：开发期 `src-tauri/data/`（编译期 `CARGO_MANIFEST_DIR`），打包后 `%APPDATA%\com.moeshelf.next\data`
+- 命令：`list_games` / `add_dummy_game`（薄壳），2 个单测覆盖建表与幂等插入
+- 前端：`src/lib/api.ts` 统一出口，`App.tsx` 启动时读库，假数据文件已删除
+- 验证方式：跑应用看控制台 `[db] 就绪：...（schema v1）`；空库时界面显示空态，点"插入 4 条测试数据"后出现卡片
 
-### B2. 旧数据迁移（一次性，只读旧库）
+### B2. 旧数据迁移（**下一步**，一次性，只读旧库）
 
 源：`E:\moeshelf\moeshelf-build-2.1.0\data\moeshelf.db`（211 games / 58 playtime / 372 scrape_cache）
 
@@ -262,25 +307,23 @@ vndbId?
 - 人工修改（旧 `settings.json` 的 7 张 `*Map`）→ 写进 `locked_fields` + 对应列
 - 迁移脚本必须**只读打开旧库**（`mode=ro`），且先在副本上跑通
 
-### B3. Tauri 命令
-
-先只做三个，够界面跑起来：
+### B3. Tauri 命令（`list_games` 已完成，剩两个）
 
 ```rust
-#[tauri::command] fn list_games() -> Result<Vec<Game>, String>
-#[tauri::command] fn get_game(id: String) -> Result<Option<Game>, String>
-#[tauri::command] fn update_game(id: String, patch: GamePatch) -> Result<(), String>
+list_games()   -> Vec<Game>          // ✅ 已实现
+get_game(id)   -> Option<Game>       // ⬜ 待做（详情面板单独刷新时用）
+update_game(id, patch) -> ()         // ⬜ 待做（保存并锁定落库 + 写 locked_fields）
 ```
 
-`Game` 结构体加 `#[serde(rename_all = "camelCase")]`，与 `src/types/game.ts` 一一对应，前端不做二次映射。
+`Game` 结构体已加 `#[serde(rename_all = "camelCase")]`，与 `src/types/game.ts` 一一对应，前端不做二次映射。
 
-### B4. 前端接真数据
+### B4. 前端接真数据（已完成 1、4，剩 2、3）
 
-1. `App.tsx`：`useState(SEED_GAMES)` → `useEffect` 里 `invoke<Game[]>("list_games")`，保留 loading 状态。
-2. `DetailPanel` 保存 → `invoke("update_game")`，成功后本地合并（保留现有 Toast 文案）。
-3. `CoverArt` → 真封面：`convertFileSrc(cachePath)` 指向旧 `cache/images/{hash}.bin`，
+1. ✅ `App.tsx`：启动 `useEffect` → `list_games`，保留 loading/错误态。
+2. ⬜ `DetailPanel` 保存 → `invoke("update_game")`，成功后本地合并（现在只改内存，关掉应用就丢）。
+3. ⬜ `CoverArt` → 真封面：`convertFileSrc(cachePath)` 指向旧 `cache/images/{hash}.bin`，
    或把缓存目录整体复制到新数据目录（**产品负责人要求复用，不许重新下载**）。
-4. `ALL_TAGS` → 由数据动态汇总。
+4. ✅ 标签由数据动态汇总（`ALL_TAGS` 已删）。
 
 ### B5. 封面对接方案（二选一，需产品负责人拍板）
 

@@ -1,6 +1,29 @@
 import type { Game } from "@/types/game";
 import { cn } from "@/lib/utils";
 
+/** 低饱和双色板：真库记录没有 coverColors 时，按 id 哈希取一组，保证同一部游戏颜色稳定 */
+const FALLBACK_PALETTES: [string, string][] = [
+  ["#5B5BD6", "#9B8AFB"],
+  ["#2E7DA8", "#7FC4D8"],
+  ["#7C3A5A", "#C08497"],
+  ["#B4685A", "#E8B4A0"],
+  ["#4A5568", "#94A3B8"],
+  ["#4B3F5E", "#8B7BA0"],
+  ["#2C7A7B", "#7EC8C3"],
+  ["#3F4A6B", "#8CA0C4"],
+  ["#C2708F", "#F0C0CF"],
+  ["#5A4A7A", "#A18BC7"],
+  ["#6B7F5E", "#B8CBA0"],
+  ["#8A5A3B", "#D9B08C"],
+];
+
+function paletteFor(game: Game): [string, string] {
+  if (game.coverColors) return game.coverColors;
+  let hash = 0;
+  for (const ch of game.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return FALLBACK_PALETTES[hash % FALLBACK_PALETTES.length];
+}
+
 /**
  * 假封面：低饱和双色渐变 + 细斜纹 + 宋体大字水印 + 内描边。
  * 真库接入后这里换成 <img src={coverUrl} />，外层比例与遮罩保持不变。
@@ -18,7 +41,7 @@ export function CoverArt({
   className?: string;
   variant?: "poster" | "wide";
 }) {
-  const [c1, c2] = game.coverColors;
+  const [c1, c2] = paletteFor(game);
   const gid = `g-${game.id}`;
   const rid = `r-${game.id}`;
   const pid = `p-${game.id}`;

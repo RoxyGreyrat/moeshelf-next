@@ -5,7 +5,15 @@
 
 export type Platform = "windows" | "android";
 
-export type Engine = "kirikiri" | "siglus" | "artemis" | "bgi" | "renpy" | "unity";
+export type Engine =
+  | "kirikiri"
+  | "siglus"
+  | "artemis"
+  | "bgi"
+  | "renpy"
+  | "unity"
+  /** 扫描器认不出来的引擎。真实数据里一定有，不能省 */
+  | "unknown";
 
 export type RatingSource = "vndb" | "bangumi";
 
@@ -30,8 +38,14 @@ export interface Game {
   rating: number;
   ratingSource: RatingSource;
   description: string;
-  /** 假封面用的双色（真库会换成 coverUrl） */
-  coverColors: [string, string];
+  cnDescription?: string;
+  /**
+   * 假封面用的双色。真库里的记录没有这个字段（封面走 coverUrl + 本地缓存），
+   * 缺省时 CoverArt 会按 id 哈希从固定色板里挑一组，保证同一部游戏每次颜色一致。
+   */
+  coverColors?: [string, string];
+  /** 封面远程直链（VNDB CDN 等）。B 阶段后续接入本地缓存后改用它 */
+  coverUrl?: string | null;
   /** 主程序：旧库 exeMap 提升成列 */
   launchExe: string;
   folderPath: string;
@@ -57,6 +71,7 @@ export const ENGINE_LABEL: Record<Engine, string> = {
   bgi: "BGI",
   renpy: "Ren'Py",
   unity: "Unity",
+  unknown: "未识别",
 };
 
 export type GridState = "normal" | "loading" | "empty" | "error";

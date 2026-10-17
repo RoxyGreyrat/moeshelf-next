@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { ALL_TAGS, SEED_GAMES } from "@/data/games";
+import { addDummyGame, listGames } from "@/lib/api";
 import type {
   Engine,
   Filters,
@@ -30,10 +30,11 @@ function toggleIn<T>(list: T[], value: T): T[] {
 }
 
 export default function App() {
-  const [games, setGames] = useState<Game[]>(SEED_GAMES);
+  // 数据来自 Rust 命令层：启动时 list_games，失败则停在错误态
+  const [games, setGames] = useState<Game[]>([]);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<ViewMode>("grid");
-  const [gridState, setGridState] = useState<GridState>("normal");
+  const [gridState, setGridState] = useState<GridState>("loading");
   const [selectMode, setSelectMode] = useState<SelectMode>("single");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
 
@@ -47,6 +48,32 @@ export default function App() {
   const [columns, setColumns] = useState(4);
 
   const searchRef = useRef<HTMLInputElement>(null);
+
+  /* ------------------------------------------------------------ 数据装载（Rust） */
+
+  /** 从 SQLite 读全量列表。成功后清掉选中，避免指向已不存在的 id */
+  const reload = useCallback(async () => {
+    try {
+      const rows = await listGames();
+      setGames(rows);
+      setSelectedIds([]);
+      setCursorId(null);
+      setGridState("normal");
+      return rows;
+    } catch (err) {
+      console.error("[list_games]", err);
+      setGridState("error");
+      toast.error("读取游戏库失败", {
+        description: String(err),
+      });
+      return [];
+    }
+  }, []);
+
+  // 首帧就是骨架屏，读库完成后切回 normal
+  useEffect(() => {
+    void reload();
+  }, [reload]);
 
   /* ---------------------------------------------------------------- 派生数据 */
 
@@ -105,6 +132,12 @@ export default function App() {
     return map;
   }, [games]);
 
+  /** 标签候选项不再手写，直接由库里的数据汇总 */
+  const allTags = useMemo(
+    () => Array.from(new Set(games.flatMap((g) => g.tags))).sort(),
+    [games],
+  );
+
   /* ------------------------------------------------------------------ 交互 */
 
   const clearFilters = useCallback(() => {
@@ -136,6 +169,23 @@ export default function App() {
       description: "在 E:\\galgame 下发现 12 部游戏，其中 3 部引擎未识别。",
     });
   }, []);
+
+  /** 往 SQLite 里塞 4 条演示数据，然后重新读一遍（验证前端 → Rust → DB 整条链路） */
+  const handleSeed = useCallback(async () => {
+    try {
+      const total = await addDummyGame();
+      const rows = await reload();
+      if (rows.length > 0) {
+        setGridState("normal");
+      }
+      toast.success("测试数据已写入 SQLite", {
+        description: `表内共 ${total} 条，界面读到 ${rows.length} 条`,
+      });
+    } catch (err) {
+      console.error("[add_dummy_game]", err);
+      toast.error("写入测试数据失败", { description: String(err) });
+    }
+  }, [reload]);
 
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
@@ -318,7 +368,7 @@ export default function App() {
             platformCounts={platformCounts}
             engineCounts={engineCounts}
             tagCounts={tagCounts}
-            allTags={ALL_TAGS}
+            allTags={allTags}
             activeCount={activeCount}
             onTogglePlatform={(p) =>
               setFilters((f) => ({ ...f, platforms: toggleIn(f.platforms, p) }))
@@ -371,6 +421,7 @@ export default function App() {
                 onSelect={handleSelect}
                 onOpen={handleOpen}
                 onScan={handleScan}
+                onSeed={handleSeed}
                 onRetry={() => setGridState("normal")}
                 onClearFilters={clearFilters}
                 onColumnsChange={setColumns}
