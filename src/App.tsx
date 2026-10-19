@@ -476,6 +476,19 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // F5 / Ctrl+R 是 WebView 的"整页重载"：对一个本地应用来说等于把选中、
+      // 滚动位置、筛选条件全丢掉，重新拉一遍 HTML 和 JS。
+      // 用户按它的真实诉求只是"让我看到最新数据"，所以拦下来改成重读游戏库。
+      if (
+        e.key === "F5" ||
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")
+      ) {
+        e.preventDefault();
+        void reload();
+        toast.success("已重新读取游戏库");
+        return;
+      }
+
       // 设置和全屏详情都是整页，由它们自己处理键盘；书架那套快捷键在这里必须让位
       if (settingsOpen || detailId) return;
       const target = e.target as HTMLElement | null;
@@ -554,6 +567,7 @@ export default function App() {
     gridState,
     handleOpen,
     moveCursor,
+    reload,
     selectMode,
     selectedIds.length,
     settingsOpen,
@@ -583,7 +597,13 @@ export default function App() {
       <TooltipProvider delayDuration={300}>
         <GameDetailPage
           gameId={detailId}
-          onClose={() => setDetailId(null)}
+          onClose={() => {
+            const id = detailId;
+            setDetailId(null);
+            // 详情页里可能改过数据（获取资料 / 编辑 / 补丁改了启动项）：
+            // 列表里那一行必须跟着更新，否则回来看到的还是旧标题、旧封面。
+            void refreshGameRow(id);
+          }}
           onPlay={handlePlay}
           onOpenFolder={() => void handleOpenFolder()}
         />
