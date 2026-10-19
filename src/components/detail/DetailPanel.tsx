@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "motion/react";
 import {
   EyeOff,
   FolderOpen,
@@ -30,6 +31,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { formatBytes, formatCount } from "@/lib/format";
 import { CoverArt } from "@/components/game/CoverArt";
 
 interface DetailPanelProps {
@@ -143,11 +145,16 @@ export function DetailPanel({
   onOpenFolder,
 }: DetailPanelProps) {
   const [draft, setDraft] = useState<Draft | null>(null);
+  // 长简介 / 多标签的展开状态，换一部游戏就收起
+  const [descExpanded, setDescExpanded] = useState(false);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
 
   // 切换游戏 / 进入编辑态时重置草稿
   useEffect(() => {
     if (editing && game) setDraft(toDraft(game));
     else setDraft(null);
+    setDescExpanded(false);
+    setTagsExpanded(false);
   }, [editing, game]);
 
   if (!game) {
@@ -167,6 +174,15 @@ export function DetailPanel({
   }
 
   const locked = (key: string) => game.lockedFields.includes(key);
+
+  // 真实库里标签常有 8~16 个（VNDB 的 genres），全量渲染会把面板顶下去；
+  // 简介同样可能几百字。两个都做"先折叠、可展开"。
+  const TAGS_PREVIEW = 6;
+  const visibleTags = tagsExpanded ? game.tags : game.tags.slice(0, TAGS_PREVIEW);
+  const hiddenTagCount = game.tags.length - visibleTags.length;
+
+  const description = (game.cnDescription?.trim() || game.description || "").trim();
+  const descIsLong = description.length > 180;
   const multi = multiCount > 1;
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
@@ -216,8 +232,18 @@ export function DetailPanel({
 
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card">
-      {/* 顶部横版大图 */}
-      <div className="relative h-36 shrink-0 overflow-hidden">
+      {/* 切换游戏时整块淡入（key 变了就重挂载）。
+          刻意**不做 exit 等待**：详情面板跟着选中项高频变化，
+          「先淡出再淡入」在连续按方向键时会出现空白帧，反而显得卡。 */}
+      <motion.div
+        key={game.id}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        {/* 顶部横版大图 */}
+        <div className="relative h-32 shrink-0 overflow-hidden">
         <CoverArt game={game} variant="wide" />
         <div className="absolute inset-0 bg-gradient-to-t from-card via-card/25 to-transparent" />
         <div className="absolute inset-x-3 bottom-2 flex items-center gap-1.5">
@@ -268,8 +294,8 @@ export function DetailPanel({
             </div>
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-1">
-            {game.tags.map((t) => (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            {visibleTags.map((t) => (
               <Badge
                 key={t}
                 variant="secondary"
@@ -278,6 +304,25 @@ export function DetailPanel({
                 {t}
               </Badge>
             ))}
+            {hiddenTagCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setTagsExpanded(true)}
+                className="h-5 rounded-full border border-border px-1.5 text-[10px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title={`还有 ${hiddenTagCount} 个标签`}
+              >
+                +{hiddenTagCount}
+              </button>
+            )}
+            {tagsExpanded && game.tags.length > TAGS_PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setTagsExpanded(false)}
+                className="h-5 px-1 text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                收起
+              </button>
+            )}
           </div>
 
           <Separator className="my-3" />
@@ -298,7 +343,16 @@ export function DetailPanel({
                 locked={locked("rating")}
               />
               <FieldRow label="主程序" value={game.launchExe} mono />
-              <FieldRow label="文件数" value={`${game.fileCount} 个`} />
+              {/* 文件数与体积合并成一行：本来是两行，占了 30px，
+                  把「展开全部」挤到滚动区外面去了。 */}
+              <FieldRow
+                label="文件"
+                value={`${formatCount(game.fileCount)} 个${
+                  game.dirSize > 0 ? ` · ${formatBytes(game.dirSize)}` : ""
+                }`}
+              />
+              {/* 体积只有扫描过的条目才有（迁移进来的老数据 dir_size = 0），
+                  为 0 时上面那行只显示个数。 */}
               <FieldRow label="入库" value={game.firstSeenAt.slice(0, 10)} />
             </div>
           ) : (
@@ -391,12 +445,30 @@ export function DetailPanel({
             )
           )}
 
-          {!editing && (
-            <p className="selectable mt-3 border-t border-border pt-3 text-[12px] leading-[1.75] text-muted-foreground">
+          {!editing && description && (
+            <div className="mt-2 border-t border-border pt-2">
               {/* 旧库的中文简介存在 cn_description 里，英文在 description；
                   中文优先，没有中文才退回英文 */}
-              {game.cnDescription?.trim() || game.description}
-            </p>
+              <p
+                className={cn(
+                  "selectable text-[12px] leading-[1.75] text-muted-foreground",
+                  // 长简介先折 4 行：再长就会把「展开全部」顶到滚动区外面，
+                  // 用户根本看不见那个按钮。
+                  !descExpanded && descIsLong && "line-clamp-[4]",
+                )}
+              >
+                {description}
+              </p>
+              {descIsLong && (
+                <button
+                  type="button"
+                  onClick={() => setDescExpanded((v) => !v)}
+                  className="mt-1 text-[11px] text-primary transition-opacity hover:opacity-75"
+                >
+                  {descExpanded ? "收起" : "展开全部"}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </ScrollArea>
@@ -493,6 +565,7 @@ export function DetailPanel({
           <span className="truncate">{game.folderPath}</span>
         </button>
       </footer>
+      </motion.div>
     </aside>
   );
 }

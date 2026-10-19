@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { formatBytes, formatCount } from "@/lib/format";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -50,18 +51,6 @@ function baseName(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   if (parts.length <= 1) return path;
   return parts[parts.length - 1];
-}
-
-function formatBytes(n: number): string {
-  if (!n) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = n;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i += 1;
-  }
-  return `${value.toFixed(i === 0 || value >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
 function shortDate(iso: string | null): string {
@@ -406,7 +395,7 @@ export function SettingsDialog({
                     <span className="shrink-0 text-muted-foreground">封面缓存</span>
                     <span className="text-right text-foreground">
                       {info.coverDirExists ? (
-                        `${info.coverCount.toLocaleString()} 张`
+                        `${formatCount(info.coverCount)} 张`
                       ) : (
                         <span className="text-amber-600">目录不存在</span>
                       )}

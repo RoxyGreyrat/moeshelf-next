@@ -1,8 +1,12 @@
 import { useState } from "react";
+import { AnimatePresence, motion, type Transition } from "motion/react";
 import { Bug, ChevronDown, Loader2 } from "lucide-react";
 import type { GridState, SelectMode } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+/** 调试面板的进出场：短、干脆，与界面其他弹簧同一族 */
+const springPanel: Transition = { type: "spring", stiffness: 420, damping: 32 };
 
 interface StateSwitcherProps {
   gridState: GridState;
@@ -64,23 +68,37 @@ export function StateSwitcher({
   onToastSuccess,
   onToastError,
 }: StateSwitcherProps) {
-  const [open, setOpen] = useState(true);
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="展开状态调试器"
-        className="fixed bottom-4 left-[15.5rem] z-40 flex size-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-[0_8px_24px_-10px_rgba(24,24,27,0.4)] transition-colors hover:text-foreground"
-      >
-        <Bug className="size-4" />
-      </button>
-    );
-  }
+  // 默认**收起**：展开时它是个浮层，会压住列表视图左边那几行。
+  // 要切状态时点左下角那枚圆形按钮。
+  const [open, setOpen] = useState(false);
 
   return (
-    <div className="fixed bottom-4 left-[15.5rem] z-40 w-52 space-y-2 rounded-xl border border-border bg-card p-2 shadow-[0_16px_40px_-16px_rgba(24,24,27,0.35)]">
+    <AnimatePresence mode="wait" initial={false}>
+      {!open ? (
+        <motion.button
+          key="pill"
+          type="button"
+          onClick={() => setOpen(true)}
+          title="状态调试器（开发期工具）"
+          aria-label="展开状态调试器"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.9 }}
+          transition={springPanel}
+          className="fixed bottom-4 left-[15.5rem] z-40 flex size-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-[0_8px_24px_-10px_rgba(24,24,27,0.4)] transition-colors hover:text-foreground"
+        >
+          <Bug className="size-4" />
+        </motion.button>
+      ) : (
+        <motion.div
+          key="panel"
+          initial={{ opacity: 0, scale: 0.94, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.94, y: 8 }}
+          transition={springPanel}
+          style={{ transformOrigin: "bottom left" }}
+          className="fixed bottom-4 left-[15.5rem] z-40 w-52 space-y-2 rounded-xl border border-border bg-card p-2 shadow-[0_16px_40px_-16px_rgba(24,24,27,0.35)]"
+        >
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
           <Bug className="size-3.5 text-primary" />
@@ -170,6 +188,8 @@ export function StateSwitcher({
           </Button>
         </div>
       </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

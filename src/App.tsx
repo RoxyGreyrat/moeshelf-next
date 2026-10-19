@@ -144,6 +144,25 @@ export default function App() {
     return games.find((g) => g.id === id) ?? null;
   }, [games, selectedIds]);
 
+  /**
+   * 筛选把选中项藏起来时，右侧详情会显示一部**网格里看不见的**游戏，
+   * 左边"共 0 部"、右边还挂着内容，明显不自洽。
+   * 这里把选中/光标收敛到"仍然可见"的那些，两边永远一致。
+   */
+  useEffect(() => {
+    const visible = new Set(filtered.map((g) => g.id));
+    const kept = selectedIds.filter((id) => visible.has(id));
+
+    if (kept.length !== selectedIds.length) {
+      setSelectedIds(kept);
+      setCursorId(kept.length > 0 ? kept[kept.length - 1] : null);
+      return;
+    }
+    if (cursorId && !visible.has(cursorId)) {
+      setCursorId(kept.length > 0 ? kept[kept.length - 1] : null);
+    }
+  }, [cursorId, filtered, selectedIds]);
+
   const activeCount =
     filters.platforms.length + filters.engines.length + filters.tags.length;
 

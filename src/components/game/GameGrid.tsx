@@ -199,7 +199,7 @@ export function GameGrid({
           <StatePanel
             icon={<FolderSearch className="size-6 text-muted-foreground" />}
             title="这个书架还是空的"
-            desc="选择一个游戏根目录，MoeShelf 会自动识别主程序、引擎和封面。"
+            desc="选择一个游戏根目录，MoeShelf 会识别主程序、引擎和目录体积。"
             action={
               <Button onClick={onScan} className="gap-1.5">
                 <ScanLine className="size-4" />
@@ -215,7 +215,7 @@ export function GameGrid({
           <StatePanel
             icon={<AlertTriangle className="size-6 text-amber-600" />}
             title="扫描时出了点问题"
-            desc="目录 E:\galgame 无法读取，可能是权限不足或磁盘未连接。"
+            desc="读不到游戏库。可能是数据文件被占用或损坏，重试一次通常能好。"
             action={
               <Button variant="outline" onClick={onRetry} className="gap-1.5">
                 <RotateCw className="size-4" />
