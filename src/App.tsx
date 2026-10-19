@@ -840,20 +840,23 @@ export default function App() {
           />
         )}
 
-        <StateSwitcher
-          gridState={gridState}
-          onGridStateChange={setGridState}
-          selectMode={selectMode}
-          onSelectModeChange={setSelectMode}
-          editing={editing}
-          onEditingChange={setEditing}
-          onToastSuccess={() =>
-            toast.success("已获取资料", { description: "VNDB 已匹配 v19273 · 樱之诗" })
-          }
-          onToastError={() =>
-            toast.error("获取资料失败", { description: "请求超时，请检查网络或代理后重试。" })
-          }
-        />
+        {/* 状态调试器：只在开发期出现，打包后不应该出现在用户面前 */}
+        {import.meta.env.DEV && (
+          <StateSwitcher
+            gridState={gridState}
+            onGridStateChange={setGridState}
+            selectMode={selectMode}
+            onSelectModeChange={setSelectMode}
+            editing={editing}
+            onEditingChange={setEditing}
+            onToastSuccess={() =>
+              toast.success("已获取资料", { description: "VNDB 已匹配 v19273 · 樱之诗" })
+            }
+            onToastError={() =>
+              toast.error("获取资料失败", { description: "请求超时，请检查网络或代理后重试。" })
+            }
+          />
+        )}
 
         {/* 覆盖层：设置 / 全屏详情。书架不动，退出时只是把这一层移开 */}
         <AnimatePresence>
