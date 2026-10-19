@@ -297,3 +297,75 @@ impl Character {
             .collect()
     }
 }
+
+/* ------------------------------------------------------------ 补丁记录 */
+
+/// 一条补丁安装记录。字段与 `patch_files` 里的明细一起决定"能不能还原"。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchRecord {
+    pub id: String,
+    pub game_hash: String,
+    /// 显示名，默认取补丁包/目录名，用户可改
+    pub name: String,
+    /// archive（zip）/ folder / installer
+    pub kind: String,
+    pub source_path: String,
+    /// applied | reverted | partial
+    pub status: String,
+    pub applied_at: String,
+    pub reverted_at: Option<String>,
+    pub backup_dir: String,
+    pub notes: String,
+    pub file_count: i64,
+    pub added_count: i64,
+    pub replaced_count: i64,
+    /// 被覆盖但超过备份上限的文件数：这些还原不回来
+    pub unbacked_count: i64,
+}
+
+impl PatchRecord {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get("id")?,
+            game_hash: row.get("game_hash")?,
+            name: row.get("name")?,
+            kind: row.get("kind")?,
+            source_path: row.get("source_path")?,
+            status: row.get("status")?,
+            applied_at: row.get("applied_at")?,
+            reverted_at: row.get("reverted_at")?,
+            backup_dir: row.get("backup_dir")?,
+            notes: row.get("notes")?,
+            file_count: row.get("file_count")?,
+            added_count: row.get("added_count")?,
+            replaced_count: row.get("replaced_count")?,
+            unbacked_count: row.get("unbacked_count")?,
+        })
+    }
+}
+
+/// 补丁动了哪个文件。`rel_path` 一律相对游戏目录、用 `/` 分隔。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchFileRow {
+    pub rel_path: String,
+    /// add | replace
+    pub action: String,
+    pub size: i64,
+    pub backed_up: bool,
+}
+
+impl PatchFileRow {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            rel_path: row.get("rel_path")?,
+            action: row.get("action")?,
+            size: row.get("size")?,
+            backed_up: row.get("backed_up")?,
+        })
+    }
+}
+
+pub const PATCH_COLUMNS: &str = "id, game_hash, name, kind, source_path, status, applied_at, \
+     reverted_at, backup_dir, notes, file_count, added_count, replaced_count, unbacked_count";

@@ -6,6 +6,7 @@ import {
   Pencil,
   Play,
   CloudDownload,
+  Puzzle,
   Star,
   Users,
 } from "lucide-react";
@@ -22,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { GameEditDialog } from "@/components/detail/GameEditDialog";
 import { FetchInfoDialog } from "@/components/detail/FetchInfoDialog";
 import { DescriptionEditDialog } from "@/components/detail/DescriptionEditDialog";
+import { PatchManagerDialog } from "@/components/detail/PatchManagerDialog";
 
 interface GameDetailPageProps {
   /** 要展示的游戏 id（就是 path_hash） */
@@ -167,6 +169,7 @@ export function GameDetailPage({
   const [editOpen, setEditOpen] = useState(false);
   const [scrapeOpen, setScrapeOpen] = useState(false);
   const [descEditOpen, setDescEditOpen] = useState(false);
+  const [patchOpen, setPatchOpen] = useState(false);
   /** 变了就重新拉一次详情（保存 / 获取资料之后） */
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((k) => k + 1);
@@ -235,6 +238,16 @@ export function GameDetailPage({
         >
           <CloudDownload className="size-3.5" />
           获取资料
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setPatchOpen(true)}
+          disabled={!game}
+          className="h-8 gap-1.5"
+        >
+          <Puzzle className="size-3.5" />
+          补丁
         </Button>
         <Button
           variant="outline"
@@ -562,6 +575,12 @@ export function GameDetailPage({
             game={game}
             onOpenChange={setDescEditOpen}
             onSaved={() => refresh()}
+          />
+          <PatchManagerDialog
+            open={patchOpen}
+            game={game}
+            onOpenChange={setPatchOpen}
+            onChanged={() => refresh()}
           />
         </>
       )}

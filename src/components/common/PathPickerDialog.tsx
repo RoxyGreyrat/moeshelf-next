@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowUp,
+  Check,
+  FileArchive,
   FileImage,
   Folder,
   HardDrive,
   Loader2,
-  Check,
 } from "lucide-react";
 
 import { listPath } from "@/lib/api";
@@ -22,11 +23,13 @@ import {
 import { cn } from "@/lib/utils";
 
 const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
+/** 补丁包：zip 能直接读；7z/rar 会提示先解压；exe 是安装器 */
+const PATCH_EXT = /\.(zip|7z|rar|exe)$/i;
 
 interface PathPickerDialogProps {
   open: boolean;
-  /** folder = 选目录；image = 选一张图片 */
-  mode: "folder" | "image";
+  /** folder = 选目录；image = 选一张图片；patch = 选补丁包或补丁文件夹 */
+  mode: "folder" | "image" | "patch";
   title?: string;
   onOpenChange: (open: boolean) => void;
   onPick: (path: string) => void;
@@ -81,12 +84,15 @@ export function PathPickerDialog({
 
   const currentPath = listing?.path ?? null;
 
-  const entries = (listing?.entries ?? []).filter((e) =>
-    mode === "image" ? e.isDir || IMAGE_EXT.test(e.name) : true,
-  );
+  const entries = (listing?.entries ?? []).filter((e) => {
+    if (mode === "image") return e.isDir || IMAGE_EXT.test(e.name);
+    if (mode === "patch") return e.isDir || PATCH_EXT.test(e.name);
+    return true;
+  });
 
   const pickCurrent = () => {
-    if (mode === "folder") {
+    // 补丁可以是压缩包，也可以是已经解压好的文件夹
+    if (mode === "folder" || (mode === "patch" && !selectedFile)) {
       if (currentPath) {
         onPick(currentPath);
         onOpenChange(false);
@@ -99,19 +105,23 @@ export function PathPickerDialog({
     }
   };
 
-  const canConfirm = mode === "folder" ? !!currentPath : !!selectedFile;
+  const canConfirm =
+    mode === "folder" || mode === "patch" ? !!currentPath : !!selectedFile;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-0 p-0 sm:max-w-[640px]">
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle className="text-[15px]">
-            {title ?? (mode === "folder" ? "选择文件夹" : "选择图片")}
+            {title ??
+              (mode === "folder" ? "选择文件夹" : mode === "patch" ? "选择补丁" : "选择图片")}
           </DialogTitle>
           <DialogDescription className="text-[11.5px]">
             {mode === "folder"
               ? "进入目标文件夹后点右下角确认；这里不调用系统对话框。"
-              : "支持 jpg / png / webp / gif / bmp。"}
+              : mode === "patch"
+                ? "选一个 zip / exe，或者进入补丁文件夹后直接确认。7z / rar 需要先解压。"
+                : "支持 jpg / png / webp / gif / bmp。"}
           </DialogDescription>
         </DialogHeader>
 
@@ -166,7 +176,8 @@ export function PathPickerDialog({
             </div>
           ) : entries.length === 0 ? (
             <p className="flex h-full items-center justify-center text-[12px] text-muted-foreground">
-              这个目录里没有可选的{mode === "image" ? "图片" : "文件夹"}。
+              这个目录里没有可选的
+              {mode === "image" ? "图片" : mode === "patch" ? "补丁包或文件夹" : "文件夹"}。
             </p>
           ) : (
             <ul className="space-y-px">
@@ -175,6 +186,7 @@ export function PathPickerDialog({
                   key={e.path}
                   entry={e}
                   selected={selectedFile === e.path}
+                  patch={mode === "patch"}
                   onEnter={() => {
                     if (e.isDir) void load(e.path);
                     else setSelectedFile(e.path);
@@ -196,16 +208,24 @@ export function PathPickerDialog({
           <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={selectedFile ?? ""}>
             {mode === "folder"
               ? currentPath ?? "还没有进入任何目录"
-              : selectedFile
-                ? selectedFile.split(/[\\/]/).pop()
-                : "还没有选中图片"}
+              : currentPath && !selectedFile && mode === "patch"
+                ? `整个文件夹：${currentPath}`
+                : selectedFile
+                  ? selectedFile.split(/[\\/]/).pop()
+                  : "还没有选中图片"}
           </p>
           <Button variant="outline" size="sm" className="h-8" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button size="sm" className="h-8 gap-1.5" disabled={!canConfirm} onClick={pickCurrent}>
             <Check className="size-3.5" />
-            {mode === "folder" ? "选择此文件夹" : "使用这张图片"}
+            {mode === "folder"
+              ? "选择此文件夹"
+              : mode === "patch"
+                ? selectedFile
+                  ? "使用这个补丁"
+                  : "使用这个文件夹"
+                : "使用这张图片"}
           </Button>
         </div>
       </DialogContent>
@@ -216,15 +236,18 @@ export function PathPickerDialog({
 function PathRow({
   entry,
   selected,
+  patch,
   onEnter,
   onPickFile,
 }: {
   entry: PathEntry;
   selected: boolean;
+  /** 补丁模式：文件用压缩包图标，别用图片图标误导 */
+  patch: boolean;
   onEnter: () => void;
   onPickFile: () => void;
 }) {
-  const Icon = entry.isDir ? Folder : FileImage;
+  const Icon = entry.isDir ? Folder : patch ? FileArchive : FileImage;
 
   return (
     <li>

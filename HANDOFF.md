@@ -2,7 +2,7 @@
 
 > 写给"下一个接手的人/下一个对话的 AI"。
 > 先读这份，再读 `DECISIONS.md`（决策理由）。两者冲突时以本文件的**现状**为准、以 DECISIONS 的**理由**为准。
-> 最后更新：2026-10-19 13:40（封面候选改为读已关联条目 + 应用内代理设置）
+> 最后更新：2026-10-19 14:05（补丁管理落地：预览 / 备份 / 覆盖 / 还原）
 
 ---
 
@@ -12,20 +12,22 @@
 编辑保存真落库并锁定字段、211 部下切视图 4 帧 → 46 帧；目录扫描器（Rust 规则引擎）与
 **前端完整接线**（选目录 → 实时进度 → 写库 → 刷新列表 → 报「新增/更新」）都已跑通；
 扫描收进来的工具目录可以**逐个忽略**（设置里能恢复）或**删除记录**。
-**离"能日常用"只差：启动器（启动游戏 + 计时）、补丁管理。**
+**离"能日常用"只差：启动器（启动游戏 + 计时）。**
 
-2026-10-19 补的两处：
+2026-10-19 补的三块：
 1. **封面候选不再搜索** —— 直接读 `games.vndb_id`（211 部里 204 部有），取该条目主封面
    + 所有 release 的包装图；没关联条目时界面给引导，不发请求（详见 DECISIONS 15）；
 2. **设置页新增「网络与代理」** —— 可手填 HTTP 代理（Clash 的 `http://127.0.0.1:7890`）
-   并逐个测试 VNDB / Bangumi / 月幕连通性（详见 DECISIONS 16）。
+   并逐个测试 VNDB / Bangumi / 月幕连通性（详见 DECISIONS 16）；
+3. **补丁管理落地** —— 预览会动哪些文件 → 备份 → 覆盖 → 一键还原；支持 zip / 文件夹 /
+   安装器 exe；`patch_scan` 扫出库里 113 个疑似补丁目录（详见 DECISIONS 17）。
 
 - 项目路径：`E:\deskbox\galgame-manager`
 - 启动：`cd E:\deskbox\galgame-manager && npm run tauri dev`
 - 构建：`npm run build`（tsc + vite，零错误）
-- Rust 测试：`cd src-tauri; $env:HTTPS_PROXY=$null; $env:HTTP_PROXY=$null; cargo test`（68 passed / 5 ignored）
+- Rust 测试：`cd src-tauri; $env:HTTPS_PROXY=$null; $env:HTTP_PROXY=$null; cargo test`（75 passed / 6 ignored）
   > 这台机器上系统是 **Windows PowerShell 5.1**，没有 `env` 命令，别照抄 `env -u ...`；用 `$env:XXX=$null`。
-- 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v4，6 张表，211 行）
+- 数据库：`src-tauri\data\moeshelf.db`（WAL 模式，schema v5，9 张表，211 行）
 - git：见 `git log --oneline`（最新一次提交是「C 阶段前端接线」）
 
 ---

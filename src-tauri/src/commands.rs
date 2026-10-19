@@ -846,6 +846,167 @@ pub async fn test_network(proxy: Option<String>) -> Result<Vec<crate::scrape::pr
     .map_err(|e| format!("测试线程异常：{e}"))
 }
 
+/* ------------------------------------------------------------ 补丁管理 */
+
+use crate::models::PatchRecord;
+use crate::patch::{self, PatchCandidate, PatchPreview, RevertReport};
+
+/// 取一部游戏；拿不到就是"已被删/被移动"，让上层报中文
+fn load_game_for_patch(app: &AppHandle, game_id: &str) -> Result<Game, String> {
+    let db = app.state::<Db>();
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::get_one(&conn, game_id)
+        .map_err(db_err)?
+        .ok_or_else(|| "找不到这部游戏".to_string())
+}
+
+/// 这部游戏装过哪些补丁（含已还原的，界面要能区分）
+#[tauri::command]
+pub fn patch_list(db: State<'_, Db>, game_id: String) -> Result<Vec<PatchRecord>, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::list_patches(&conn, &game_id).map_err(db_err)
+}
+
+/// 预览：算出这个补丁会新增/覆盖哪些文件，**不动硬盘**
+#[tauri::command]
+pub async fn patch_preview(
+    app: AppHandle,
+    game_id: String,
+    source: String,
+) -> Result<PatchPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let game = load_game_for_patch(&app, &game_id)?;
+        patch::preview(&app, &game, &source)
+    })
+    .await
+    .map_err(|e| format!("预览线程异常：{e}"))?
+}
+
+/// 应用：先备份再覆盖。`set_launch_exe` 是补丁里的 exe 相对路径（可选）
+#[tauri::command]
+pub async fn patch_apply(
+    app: AppHandle,
+    game_id: String,
+    staging_id: String,
+    name: String,
+    set_launch_exe: Option<String>,
+) -> Result<PatchRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let game = load_game_for_patch(&app, &game_id)?;
+        let db = app.state::<Db>();
+        patch::apply(
+            &app,
+            &db,
+            &game,
+            &staging_id,
+            &name,
+            set_launch_exe.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("应用线程异常：{e}"))?
+}
+
+/// 还原：能恢复的恢复，新增的删掉，没备份的如实报告
+#[tauri::command]
+pub async fn patch_revert(app: AppHandle, patch_id: String) -> Result<RevertReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app.state::<Db>();
+        patch::revert(&db, &patch_id)
+    })
+    .await
+    .map_err(|e| format!("还原线程异常：{e}"))?
+}
+
+/// 删掉一条补丁记录（连带备份目录）—— 只删记录，不碰已经写进游戏目录的文件
+#[tauri::command]
+pub async fn patch_delete(app: AppHandle, patch_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+
+        let record = repo::get_patch(&conn, &patch_id).map_err(db_err)?;
+        repo::delete_patch(&conn, &patch_id).map_err(db_err)?;
+        drop(conn);
+
+        if let Some(rec) = record {
+            if !rec.backup_dir.is_empty() {
+                let _ = std::fs::remove_dir_all(&rec.backup_dir);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("删除线程异常：{e}"))?
+}
+
+/// 扫描游戏目录，找出疑似补丁的子目录（未登记 / 已登记都返回）。
+///
+/// 走阻塞线程：大目录要递归两三层，同步命令会把 IPC 线程占住，界面点开对话框会顿一下。
+#[tauri::command]
+pub async fn patch_scan(app: AppHandle, game_id: String) -> Result<Vec<PatchCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        let game = repo::get_one(&conn, &game_id)
+            .map_err(db_err)?
+            .ok_or_else(|| "找不到这部游戏".to_string())?;
+        let known: Vec<String> = repo::list_patches(&conn, &game_id)
+            .map_err(db_err)?
+            .into_iter()
+            .map(|p| p.source_path)
+            .collect();
+        drop(conn);
+
+        Ok(patch::scan(&game, &known))
+    })
+    .await
+    .map_err(|e| format!("扫描线程异常：{e}"))?
+}
+
+/// 安装器型补丁：拍快照 + 启动安装器，返回会话 id
+#[tauri::command]
+pub fn patch_installer_begin(
+    db: State<'_, Db>,
+    game_id: String,
+    exe: String,
+) -> Result<String, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let game = repo::get_one(&conn, &game_id)
+        .map_err(db_err)?
+        .ok_or_else(|| "找不到这部游戏".to_string())?;
+    drop(conn);
+
+    patch::installer_begin(&game, &exe)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerReport {
+    pub patch: PatchRecord,
+    /// 检测到的变化文件数；0 表示安装器没写任何东西到游戏目录
+    pub changed: usize,
+}
+
+/// 安装器结束：对比快照，把变化的文件记成可还原的补丁记录
+#[tauri::command]
+pub async fn patch_installer_finish(
+    app: AppHandle,
+    game_id: String,
+    session_id: String,
+    name: String,
+) -> Result<InstallerReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let game = load_game_for_patch(&app, &game_id)?;
+        let db = app.state::<Db>();
+        let (patch, changed) =
+            patch::installer_finish(&app, &db, &game, &session_id, &name)?;
+        Ok(InstallerReport { patch, changed })
+    })
+    .await
+    .map_err(|e| format!("安装记录线程异常：{e}"))?
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::*;

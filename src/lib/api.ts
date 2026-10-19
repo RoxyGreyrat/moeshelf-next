@@ -336,3 +336,122 @@ export function setNetworkSettings(proxy: string): Promise<NetworkSettings> {
 export function testNetwork(proxy?: string): Promise<ProbeResult[]> {
   return invoke<ProbeResult[]>("test_network", { proxy: proxy ?? null });
 }
+
+/* ---------------------------------------------------- 补丁管理 */
+
+/** 预览里的一行：这个文件会被新增还是覆盖 */
+export interface PatchFilePreview {
+  relPath: string;
+  action: "add" | "replace";
+  size: number;
+  /** 原文件会不会备份（超过 200MB 的大文件不会） */
+  backup: boolean;
+}
+
+export interface PatchPreview {
+  /** 确认应用时带上的凭证 */
+  stagingId: string;
+  kind: "archive" | "folder" | "installer";
+  name: string;
+  source: string;
+  totalFiles: number;
+  added: number;
+  replaced: number;
+  /** 覆盖了但没备份的文件数：这些还原不回来 */
+  unbacked: number;
+  totalBytes: number;
+  /** 补丁包里的 exe，用来问"要不要设成主程序" */
+  exes: string[];
+  files: PatchFilePreview[];
+  truncated: boolean;
+  /** 安装器没有文件清单，要走"运行 → 完成"流程 */
+  installer: boolean;
+}
+
+export interface PatchRecord {
+  id: string;
+  gameHash: string;
+  name: string;
+  kind: string;
+  sourcePath: string;
+  status: "applied" | "reverted" | "partial";
+  appliedAt: string;
+  revertedAt: string | null;
+  backupDir: string;
+  notes: string;
+  fileCount: number;
+  addedCount: number;
+  replacedCount: number;
+  unbackedCount: number;
+}
+
+export interface PatchCandidate {
+  path: string;
+  relPath: string;
+  name: string;
+  files: number;
+  size: number;
+  /** 已经在补丁记录里（按路径判断） */
+  registered: boolean;
+}
+
+export interface RevertReport {
+  restored: number;
+  removed: number;
+  skipped: number;
+  status: string;
+}
+
+export interface InstallerReport {
+  patch: PatchRecord;
+  /** 检测到的变化文件数，0 = 安装器没写东西进游戏目录 */
+  changed: number;
+}
+
+export function patchList(gameId: string): Promise<PatchRecord[]> {
+  return invoke<PatchRecord[]>("patch_list", { gameId });
+}
+
+/** 只算不动：预览补丁会新增/覆盖哪些文件 */
+export function patchPreview(gameId: string, source: string): Promise<PatchPreview> {
+  return invoke<PatchPreview>("patch_preview", { gameId, source });
+}
+
+export function patchApply(
+  gameId: string,
+  stagingId: string,
+  name: string,
+  setLaunchExe?: string,
+): Promise<PatchRecord> {
+  return invoke<PatchRecord>("patch_apply", {
+    gameId,
+    stagingId,
+    name,
+    setLaunchExe: setLaunchExe ?? null,
+  });
+}
+
+export function patchRevert(patchId: string): Promise<RevertReport> {
+  return invoke<RevertReport>("patch_revert", { patchId });
+}
+
+/** 只删记录和备份，不动已经写进游戏目录的文件 */
+export function patchDelete(patchId: string): Promise<void> {
+  return invoke<void>("patch_delete", { patchId });
+}
+
+export function patchScan(gameId: string): Promise<PatchCandidate[]> {
+  return invoke<PatchCandidate[]>("patch_scan", { gameId });
+}
+
+export function patchInstallerBegin(gameId: string, exe: string): Promise<string> {
+  return invoke<string>("patch_installer_begin", { gameId, exe });
+}
+
+export function patchInstallerFinish(
+  gameId: string,
+  sessionId: string,
+  name: string,
+): Promise<InstallerReport> {
+  return invoke<InstallerReport>("patch_installer_finish", { gameId, sessionId, name });
+}

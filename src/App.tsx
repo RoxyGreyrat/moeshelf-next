@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import {
   deleteGames,
+  getGameDetail,
   listGames,
   listScanRoots,
   onScanProgress,
@@ -30,6 +31,7 @@ import { DetailPanel } from "@/components/detail/DetailPanel";
 import { GameDetailPage } from "@/components/detail/GameDetailPage";
 import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 import { DeleteGamesDialog } from "@/components/detail/DeleteGamesDialog";
+import { PatchManagerDialog } from "@/components/detail/PatchManagerDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
 import { Toaster } from "@/components/ui/sonner";
@@ -76,6 +78,8 @@ export default function App() {
   const [roots, setRoots] = useState<ScanRoot[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Game[]>([]);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  /** 补丁管理对话框 */
+  const [patchOpen, setPatchOpen] = useState(false);
 
   // 切视图会重建几十个卡片子树：走并发更新，让浏览器先响应点击再提交列表
   const [, startTransition] = useTransition();
@@ -383,11 +387,23 @@ export default function App() {
     }
   }, [activeGame]);
 
+  /**
+   * 只刷新这一行（补丁可能改了 launchExe）。
+   *
+   * 不能走 `reload()`：整表重拉会清空选中，右侧面板会当着用户的面被关掉。
+   */
+  const refreshGameRow = useCallback(async (id: string) => {
+    try {
+      const fresh = await getGameDetail(id);
+      setGames((prev) => prev.map((g) => (g.id === id ? fresh.game : g)));
+    } catch (err) {
+      console.error("[get_game_detail]", err);
+    }
+  }, []);
+
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
-    toast.success(`已打开《${activeGame.titleCn}》的补丁目录`, {
-      description: "本阶段为演示入口，D 阶段接入真实补丁管理。",
-    });
+    setPatchOpen(true);
   }, [activeGame]);
 
   const handlePlay = useCallback(() => {
@@ -698,6 +714,15 @@ export default function App() {
           }}
           onConfirm={handleDeleteConfirm}
         />
+
+        {activeGame && (
+          <PatchManagerDialog
+            open={patchOpen}
+            game={activeGame}
+            onOpenChange={setPatchOpen}
+            onChanged={() => void refreshGameRow(activeGame.id)}
+          />
+        )}
 
         <StateSwitcher
           gridState={gridState}

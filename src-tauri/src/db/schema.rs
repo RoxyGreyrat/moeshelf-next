@@ -4,7 +4,7 @@
 //! 改动表结构时**必须**新建一版 `V2_DDL` 并把 `SCHEMA_VERSION` 加 1，
 //! 再在 `db::init` 里按 `PRAGMA user_version` 选择要执行的批次 —— 不要直接改 V1。
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub const V1_DDL: &str = r#"
 -- ---------------------------------------------------------------- games
@@ -141,5 +141,50 @@ pub const V4_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
+);
+"#;
+
+/// V5：补丁管理。
+///
+/// 设计前提：**补丁一定要能退回去**。Galgame 的汉化 / 免 CD / 修正补丁都是
+/// 直接覆盖文件，装错了游戏就打不开，用户不敢点"应用"这个按钮 ——
+/// 所以每条补丁记录都带着"被它覆盖了哪些文件、备份在哪"。
+///
+/// 两个取舍：
+/// - 只记录**相对游戏目录**的路径（`patch_files.rel_path` 用 `/` 分隔），
+///   游戏目录整体搬走了照样能还原；
+/// - 一个补丁一条记录，不对补丁做版本链（用户装 v1.1 再装 v1.2 就是两条记录，
+///   分别可还原，比猜"谁覆盖谁"靠谱）。
+pub const V5_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS patches (
+    id             TEXT PRIMARY KEY,
+    game_hash      TEXT NOT NULL,
+    name           TEXT NOT NULL DEFAULT '',
+    -- archive（zip）/ folder（文件夹）/ installer（exe 安装器）
+    kind           TEXT NOT NULL DEFAULT 'folder',
+    source_path    TEXT NOT NULL DEFAULT '',
+    -- applied | reverted | partial（部分文件无法还原）
+    status         TEXT NOT NULL DEFAULT 'applied',
+    applied_at     TEXT NOT NULL DEFAULT '',
+    reverted_at    TEXT,
+    backup_dir     TEXT NOT NULL DEFAULT '',
+    notes          TEXT NOT NULL DEFAULT '',
+    file_count     INTEGER NOT NULL DEFAULT 0,
+    added_count    INTEGER NOT NULL DEFAULT 0,
+    replaced_count INTEGER NOT NULL DEFAULT 0,
+    -- 被覆盖但没备份（超过备份上限）的文件数：还原不了，界面要如实说
+    unbacked_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_patches_game ON patches(game_hash, applied_at);
+
+CREATE TABLE IF NOT EXISTS patch_files (
+    patch_id  TEXT NOT NULL,
+    rel_path  TEXT NOT NULL,
+    -- add（新增）/ replace（覆盖）
+    action    TEXT NOT NULL DEFAULT 'add',
+    size      INTEGER NOT NULL DEFAULT 0,
+    -- 原文件是否已备份：0 表示覆盖了但没备份 → 还原不了
+    backed_up INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (patch_id, rel_path)
 );
 "#;

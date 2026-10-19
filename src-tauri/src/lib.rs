@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod models;
+mod patch;
 mod scrape;
 
 use tauri::Manager;
@@ -76,6 +77,14 @@ pub fn run() {
             commands::get_network_settings,
             commands::set_network_settings,
             commands::test_network,
+            commands::patch_list,
+            commands::patch_preview,
+            commands::patch_apply,
+            commands::patch_revert,
+            commands::patch_delete,
+            commands::patch_scan,
+            commands::patch_installer_begin,
+            commands::patch_installer_finish,
             commands::update_game,
             commands::list_ignored_games,
             commands::set_games_ignored,

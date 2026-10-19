@@ -3,7 +3,9 @@
 //! 命令层（`commands.rs`）只负责拿 `State<Db>` 和做错误转换，
 //! 真正的 SQL 写在这里 —— 这样可以用 `cargo test` 直接验证，不需要拉起窗口。
 
-use crate::models::{Character, Game, GamePatch, GAME_COLUMNS};
+use crate::models::{
+    Character, Game, GamePatch, PatchFileRow, PatchRecord, GAME_COLUMNS, PATCH_COLUMNS,
+};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
@@ -1231,5 +1233,101 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Resul
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         rusqlite::params![key, value],
     )?;
+    Ok(())
+}
+
+/* ------------------------------------------------------------ 补丁 */
+
+pub fn list_patches(conn: &Connection, game_hash: &str) -> rusqlite::Result<Vec<PatchRecord>> {
+    let sql = format!(
+        "SELECT {PATCH_COLUMNS} FROM patches WHERE game_hash = ?1 ORDER BY applied_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([game_hash], PatchRecord::from_row)?;
+    rows.collect()
+}
+
+pub fn get_patch(conn: &Connection, id: &str) -> rusqlite::Result<Option<PatchRecord>> {
+    let sql = format!("SELECT {PATCH_COLUMNS} FROM patches WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map([id], PatchRecord::from_row)?;
+    match rows.next() {
+        Some(v) => Ok(Some(v?)),
+        None => Ok(None),
+    }
+}
+
+/// 写一条补丁记录 + 它的文件明细（同一个事务里，不会出现"有记录没明细"）
+pub fn insert_patch(
+    conn: &mut Connection,
+    rec: &PatchRecord,
+    files: &[PatchFileRow],
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO patches (id, game_hash, name, kind, source_path, status, applied_at,
+                              reverted_at, backup_dir, notes, file_count, added_count,
+                              replaced_count, unbacked_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            rec.id,
+            rec.game_hash,
+            rec.name,
+            rec.kind,
+            rec.source_path,
+            rec.status,
+            rec.applied_at,
+            rec.reverted_at,
+            rec.backup_dir,
+            rec.notes,
+            rec.file_count,
+            rec.added_count,
+            rec.replaced_count,
+            rec.unbacked_count,
+        ],
+    )?;
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO patch_files (patch_id, rel_path, action, size, backed_up)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for f in files {
+            stmt.execute(rusqlite::params![
+                rec.id,
+                f.rel_path,
+                f.action,
+                f.size,
+                f.backed_up as i64
+            ])?;
+        }
+    }
+
+    tx.commit()
+}
+
+pub fn list_patch_files(conn: &Connection, patch_id: &str) -> rusqlite::Result<Vec<PatchFileRow>> {
+    let mut stmt =
+        conn.prepare("SELECT rel_path, action, size, backed_up FROM patch_files WHERE patch_id = ?1")?;
+    let rows = stmt.query_map([patch_id], PatchFileRow::from_row)?;
+    rows.collect()
+}
+
+pub fn set_patch_status(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    reverted_at: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE patches SET status = ?1, reverted_at = ?2 WHERE id = ?3",
+        rusqlite::params![status, reverted_at, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_patch(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM patch_files WHERE patch_id = ?1", [id])?;
+    conn.execute("DELETE FROM patches WHERE id = ?1", [id])?;
     Ok(())
 }

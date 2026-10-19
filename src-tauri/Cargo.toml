@@ -26,6 +26,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls", "system-proxy"] }
+# 补丁包解压：只用得着 deflate（国内补丁 zip 基本都是 deflate），
+# 不要 deflate64/bzip2/zstd 那些，能少带一堆 C 依赖。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# 国内补丁包里的中文文件名常常是 GBK 且没打 UTF-8 标记，按 UTF-8 解会变乱码
+encoding_rs = "0.8"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
