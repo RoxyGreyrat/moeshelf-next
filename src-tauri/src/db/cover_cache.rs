@@ -106,6 +106,19 @@ pub fn read_any(app: &tauri::AppHandle, key: &str) -> Option<(Vec<u8>, String)> 
     read(&base, key).map(|b| (b, content_type(&base, key)))
 }
 
+/// 缓存里有没有这张图（只看文件在不在，不读内容）。
+///
+/// 角色立绘要在"补全资料"时按需补下载：先查一下，避免每次都重新拉一遍。
+pub fn exists(app: &tauri::AppHandle, key: &str) -> bool {
+    if !is_valid_key(key) {
+        return false;
+    }
+    if local_dir(app).join(format!("{key}.bin")).is_file() {
+        return true;
+    }
+    dir().join(format!("{key}.bin")).is_file()
+}
+
 /// 读取封面字节。key 非法或文件不存在都返回 None。
 pub fn read(base: &Path, key: &str) -> Option<Vec<u8>> {
     if !is_valid_key(key) {

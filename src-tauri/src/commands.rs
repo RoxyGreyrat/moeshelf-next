@@ -1179,28 +1179,38 @@ fn run_enrich(app: &AppHandle, id: &str, with_characters: bool) -> Result<Enrich
         patch.cn_description = Some(text.clone());
     }
 
-    let (updated, cv_filled, characters) = {
+    // 合并放在锁外：后面还要按角色立绘 URL 补下载，网络请求绝不能持着数据库锁
+    let mut cv_filled = 0usize;
+    let merged = merge_characters(existing.clone(), incoming, &mut cv_filled);
+    let characters = merged.len();
+
+    // 角色立绘：详情页只认本地缓存（`cover://`），没有缓存就只能显示首字占位。
+    // 这里顺手补，已经有了就跳过，不会重复下载。
+    for c in &merged {
+        if let Some(url) = c.image_url.as_deref() {
+            let key = crate::db::scanner::path_hash(url);
+            if !crate::db::cover_cache::exists(app, &key) {
+                let _ = save_cover(app, url);
+            }
+        }
+    }
+
+    let updated = {
         let db = app.state::<Db>();
         let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
-
-        let mut cv_filled = 0usize;
-        let merged = merge_characters(existing.clone(), incoming, &mut cv_filled);
-        let characters = merged.len();
 
         // 只有"本来没角色"或"确实补到了声优"才整批替换；否则不碰现有列表
         if characters > 0 && (existing.is_empty() || cv_filled > 0) {
             repo::replace_characters(&conn, id, &merged)?;
         }
 
-        let updated = if patch.cn_description.is_some() {
+        if patch.cn_description.is_some() {
             repo::update_game(&conn, id, &patch, false)?
         } else {
             repo::get_one(&conn, id)
                 .map_err(db_err)?
                 .ok_or_else(|| format!("找不到该游戏：{id}"))?
-        };
-
-        (updated, cv_filled, characters)
+        }
     };
 
     Ok(EnrichReport {
