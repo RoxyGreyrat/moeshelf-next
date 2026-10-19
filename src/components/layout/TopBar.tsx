@@ -1,8 +1,28 @@
-import { LayoutGrid, List, Loader2, ScanLine, Search, Settings, X } from "lucide-react";
+import {
+  ChevronDown,
+  FolderOpen,
+  FolderPlus,
+  LayoutGrid,
+  List,
+  Loader2,
+  ScanLine,
+  Search,
+  Settings,
+  X,
+} from "lucide-react";
 import type { ViewMode } from "@/types/game";
+import type { ScanRoot } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -15,10 +35,25 @@ interface TopBarProps {
   onQueryChange: (v: string) => void;
   view: ViewMode;
   onViewChange: (v: ViewMode) => void;
-  onScan: () => void;
+  /** 传了 root 就直接扫这个目录；不传则弹文件夹选择框 */
+  onScan: (root?: string) => void;
   scanning: boolean;
+  /** 已登记的扫描根目录；为空时扫描按钮退化成普通的"选目录" */
+  roots: ScanRoot[];
   onOpenSettings: () => void;
   searchRef: React.RefObject<HTMLInputElement | null>;
+}
+
+/** `E:\galgame\yuzusoft` → `yuzusoft`；`E:\` → `E:\` */
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 1) return path;
+  return parts[parts.length - 1];
+}
+
+function shortDate(iso: string | null): string {
+  if (!iso) return "从未扫描";
+  return iso.slice(0, 10);
 }
 
 export function TopBar({
@@ -28,6 +63,7 @@ export function TopBar({
   onViewChange,
   onScan,
   scanning,
+  roots,
   onOpenSettings,
   searchRef,
 }: TopBarProps) {
@@ -85,24 +121,78 @@ export function TopBar({
           </ToggleGroupItem>
         </ToggleGroup>
 
-        <Button
-          onClick={onScan}
-          size="sm"
-          disabled={scanning}
-          className="h-9 gap-1.5 px-3"
-        >
-          {scanning ? (
-            <>
-              <Loader2 className="size-4 animate-spin" />
-              扫描中…
-            </>
-          ) : (
-            <>
-              <ScanLine className="size-4" />
-              扫描文件夹
-            </>
-          )}
-        </Button>
+        {roots.length === 0 ? (
+          <Button
+            onClick={() => onScan()}
+            size="sm"
+            disabled={scanning}
+            className="h-9 gap-1.5 px-3"
+          >
+            {scanning ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                扫描中…
+              </>
+            ) : (
+              <>
+                <ScanLine className="size-4" />
+                扫描文件夹
+              </>
+            )}
+          </Button>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" disabled={scanning} className="h-9 gap-1.5 px-3">
+                {scanning ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    扫描中…
+                  </>
+                ) : (
+                  <>
+                    <ScanLine className="size-4" />
+                    扫描
+                    <ChevronDown className="size-3.5 opacity-70" />
+                  </>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[300px]">
+              <DropdownMenuLabel className="text-[10.5px] font-normal tracking-wide text-muted-foreground">
+                已登记的目录
+              </DropdownMenuLabel>
+              {roots.map((r) => (
+                <DropdownMenuItem
+                  key={r.id}
+                  onSelect={() => onScan(r.path)}
+                  className="gap-2"
+                >
+                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[12.5px] font-medium">
+                      {baseName(r.path)}
+                    </p>
+                    <p
+                      className="truncate text-[10.5px] text-muted-foreground"
+                      title={r.path}
+                    >
+                      {r.path}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                    {shortDate(r.lastScanAt)}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => onScan()} className="gap-2">
+                <FolderPlus className="size-3.5 text-muted-foreground" />
+                <span className="text-[12.5px]">选择其他目录…</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>

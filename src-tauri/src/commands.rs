@@ -175,6 +175,11 @@ fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
     }
     tx.commit().map_err(db_err)?;
 
+    // 扫过就记住这个目录：下次从顶栏直接选，不用再翻磁盘。
+    // 两步都忽略错误 —— 记不住不影响这次扫描的结果。
+    let _ = repo::add_scan_root(&conn, root);
+    let _ = repo::touch_scan_root(&conn, root);
+
     Ok(ScanReport {
         root: root.to_string(),
         dirs_scanned,
@@ -182,5 +187,107 @@ fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
         inserted,
         updated,
         elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/* ---------------------------------------------------- 设置页要用的命令 */
+
+use crate::models::ScanRoot;
+
+/// 已登记的扫描根目录
+#[tauri::command]
+pub fn list_scan_roots(db: State<'_, Db>) -> Result<Vec<ScanRoot>, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::list_scan_roots(&conn).map_err(db_err)
+}
+
+/// 登记一个扫描根目录（目录必须存在）
+#[tauri::command]
+pub fn add_scan_root(db: State<'_, Db>, path: String) -> Result<ScanRoot, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::add_scan_root(&conn, &path)
+}
+
+#[tauri::command]
+pub fn remove_scan_root(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::remove_scan_root(&conn, id).map_err(db_err)?;
+    Ok(())
+}
+
+/// 用系统默认程序打开一个目录（资源管理器）。
+///
+/// 走 opener 插件的 **Rust API**，不经过前端 ACL，所以 capabilities 里不需要额外权限。
+#[tauri::command]
+pub fn open_folder(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    tauri_plugin_opener::open_path(&path, None::<&str>)
+        .map_err(|e| format!("打开目录失败：{e}"))
+}
+
+/// 在资源管理器里**定位**到某一项（打开父目录并选中它）
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    tauri_plugin_opener::reveal_item_in_dir(&path)
+        .map_err(|e| format!("定位失败：{e}"))
+}
+
+/// 设置页「数据与关于」要展示的事实。全部现算，不做缓存 —— 打开一次设置才读一次。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// 应用版本（来自 Cargo.toml）
+    pub version: String,
+    /// 数据库 schema 版本
+    pub schema_version: i64,
+    pub data_dir: String,
+    pub db_path: String,
+    pub db_size: u64,
+    /// 封面缓存目录（**旧项目的目录**，方案 A 直读）
+    pub cover_dir: String,
+    pub cover_dir_exists: bool,
+    /// 缓存里有多少张封面
+    pub cover_count: usize,
+}
+
+#[tauri::command]
+pub fn app_info(app: AppHandle) -> Result<AppInfo, String> {
+    let dir = crate::db::data_dir(&app)?;
+    let db_path = dir.join("moeshelf.db");
+    let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+
+    let cover_dir = crate::db::cover_cache::dir();
+    let cover_dir_exists = cover_dir.is_dir();
+    let cover_count = if cover_dir_exists {
+        std::fs::read_dir(&cover_dir)
+            .map(|it| {
+                it.flatten()
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .to_ascii_lowercase()
+                            .ends_with(".bin")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        schema_version: crate::db::schema::SCHEMA_VERSION,
+        data_dir: dir.to_string_lossy().to_string(),
+        db_path: db_path.to_string_lossy().to_string(),
+        db_size,
+        cover_dir: cover_dir.to_string_lossy().to_string(),
+        cover_dir_exists,
+        cover_count,
     })
 }

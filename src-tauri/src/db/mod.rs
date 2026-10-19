@@ -17,7 +17,7 @@ pub struct Db(pub Mutex<Connection>);
 /// 数据目录：
 /// - 开发期固定落在 `src-tauri/data/`（编译期 CARGO_MANIFEST_DIR，方便直接看库文件）
 /// - 打包后落在 `%APPDATA%\com.moeshelf.next\data\`（安装目录通常没有写权限）
-fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data")
     } else {

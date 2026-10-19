@@ -143,3 +143,53 @@ export function setGamesIgnored(ids: string[], ignored: boolean): Promise<number
 export function deleteGames(ids: string[]): Promise<number> {
   return invoke<number>("delete_games", { ids });
 }
+
+/* ---------------------------------------------------- 扫描根目录 / 系统信息 */
+
+/** 已登记的扫描根目录（顶栏扫描按钮会列出它们） */
+export interface ScanRoot {
+  id: number;
+  path: string;
+  /** 上次扫描完成时间，从没扫过是 null */
+  lastScanAt: string | null;
+  addedAt: string;
+}
+
+export function listScanRoots(): Promise<ScanRoot[]> {
+  return invoke<ScanRoot[]>("list_scan_roots");
+}
+
+/** 登记一个根目录。目录不存在时后端会抛错（前端不用自己判断）。 */
+export function addScanRoot(path: string): Promise<ScanRoot> {
+  return invoke<ScanRoot>("add_scan_root", { path });
+}
+
+export function removeScanRoot(id: number): Promise<void> {
+  return invoke<void>("remove_scan_root", { id });
+}
+
+/** 用资源管理器打开一个目录 */
+export function openFolder(path: string): Promise<void> {
+  return invoke<void>("open_folder", { path });
+}
+
+/** 在资源管理器里定位到某一项（打开父目录并选中它） */
+export function revealPath(path: string): Promise<void> {
+  return invoke<void>("reveal_path", { path });
+}
+
+/** 设置页「数据与关于」用的静态信息 */
+export interface AppInfo {
+  version: string;
+  schemaVersion: number;
+  dataDir: string;
+  dbPath: string;
+  dbSize: number;
+  coverDir: string;
+  coverDirExists: boolean;
+  coverCount: number;
+}
+
+export function getAppInfo(): Promise<AppInfo> {
+  return invoke<AppInfo>("app_info");
+}

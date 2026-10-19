@@ -4,13 +4,15 @@ import { toast } from "sonner";
 import {
   deleteGames,
   listGames,
+  listScanRoots,
   onScanProgress,
+  openFolder,
   pickFolder,
   scanDirectory,
   setGamesIgnored,
   updateGame,
 } from "@/lib/api";
-import type { ScanProgress } from "@/lib/api";
+import type { ScanProgress, ScanRoot } from "@/lib/api";
 import type {
   Filters,
   Game,
@@ -65,6 +67,8 @@ export default function App() {
 
   // 设置面板 / 删除确认（删除是个不可撤销的动作，必须二次确认）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 已登记的扫描根目录：顶栏扫描按钮的下拉内容 */
+  const [roots, setRoots] = useState<ScanRoot[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Game[]>([]);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
@@ -94,10 +98,20 @@ export default function App() {
     }
   }, []);
 
+  /** 读已登记的扫描根目录。失败不打扰用户 —— 顶栏只是少个下拉而已 */
+  const loadRoots = useCallback(async () => {
+    try {
+      setRoots(await listScanRoots());
+    } catch (err) {
+      console.error("[list_scan_roots]", err);
+    }
+  }, []);
+
   // 首帧就是骨架屏，读库完成后切回 normal
   useEffect(() => {
     void reload();
-  }, [reload]);
+    void loadRoots();
+  }, [loadRoots, reload]);
 
   /* ---------------------------------------------------------------- 派生数据 */
 
@@ -193,49 +207,57 @@ export default function App() {
    * 扫描在 Rust 侧跑在 `spawn_blocking` 里，几分钟也不能卡住界面：
    * 进度走事件推送，最终结果走命令返回值。
    */
-  const handleScan = useCallback(async () => {
-    if (scanning) return;
+  const handleScan = useCallback(
+    async (chosen?: string) => {
+      if (scanning) return;
 
-    let root: string | null;
-    try {
-      root = await pickFolder("选择游戏库根目录");
-    } catch (err) {
-      console.error("[pick_folder]", err);
-      toast.error("打不开文件夹选择框", { description: String(err) });
-      return;
-    }
-    if (!root) return; // 用户取消，什么都不做
+      // 从顶栏下拉里点某个已登记目录 → 直接扫；否则弹选择框
+      let root: string | null = chosen ?? null;
+      if (!root) {
+        try {
+          root = await pickFolder("选择游戏库根目录");
+        } catch (err) {
+          console.error("[pick_folder]", err);
+          toast.error("打不开文件夹选择框", { description: String(err) });
+          return;
+        }
+        if (!root) return; // 用户取消，什么都不做
+      }
 
-    setScanning(true);
-    setScanProgress({ dirsScanned: 0, gamesFound: 0, current: "" });
+      setScanning(true);
+      setScanProgress({ dirsScanned: 0, gamesFound: 0, current: "" });
 
-    // 先订阅再调用：Rust 侧一开扫就发事件，订阅晚了会漏掉开头几帧
-    const unlisten = await onScanProgress(setScanProgress);
+      // 先订阅再调用：Rust 侧一开扫就发事件，订阅晚了会漏掉开头几帧
+      const unlisten = await onScanProgress(setScanProgress);
 
-    try {
-      const report = await scanDirectory(root);
-      // 扫描前选中的那条可能已经不在列表里了，重拉一次最省事
-      await reload();
+      try {
+        const report = await scanDirectory(root);
+        // 扫描前选中的那条可能已经不在列表里了，重拉一次最省事
+        await reload();
+        // 后端会把这次扫过的目录登记进 scan_roots，这里同步一下顶栏下拉
+        void loadRoots();
 
-      const seconds = (report.elapsedMs / 1000).toFixed(1);
-      toast.success(
-        report.inserted > 0
-          ? `扫描完成，新增 ${report.inserted} 部`
-          : "扫描完成，没有新游戏",
-        {
-          description: `识别 ${report.gamesFound} 部 · 更新 ${report.updated} 部 · 看了 ${report.dirsScanned} 个文件夹 · 用时 ${seconds} 秒`,
-        },
-      );
-    } catch (err) {
-      console.error("[scan_directory]", err);
-      // 不动 gridState：库里原有的数据还是好的，只是这次扫描失败了
-      toast.error("扫描失败", { description: String(err) });
-    } finally {
-      unlisten();
-      setScanning(false);
-      setScanProgress(null);
-    }
-  }, [reload, scanning]);
+        const seconds = (report.elapsedMs / 1000).toFixed(1);
+        toast.success(
+          report.inserted > 0
+            ? `扫描完成，新增 ${report.inserted} 部`
+            : "扫描完成，没有新游戏",
+          {
+            description: `识别 ${report.gamesFound} 部 · 更新 ${report.updated} 部 · 看了 ${report.dirsScanned} 个文件夹 · 用时 ${seconds} 秒`,
+          },
+        );
+      } catch (err) {
+        console.error("[scan_directory]", err);
+        // 不动 gridState：库里原有的数据还是好的，只是这次扫描失败了
+        toast.error("扫描失败", { description: String(err) });
+      } finally {
+        unlisten();
+        setScanning(false);
+        setScanProgress(null);
+      }
+    },
+    [loadRoots, reload, scanning],
+  );
 
   /* ------------------------------------------------------ 忽略 / 删除（库维护） */
 
@@ -298,6 +320,17 @@ export default function App() {
       setDeleteBusy(false);
     }
   }, [deleteTarget, dropLocally]);
+
+  /** 在资源管理器里打开当前这部游戏的目录 */
+  const handleOpenFolder = useCallback(async () => {
+    if (!activeGame) return;
+    try {
+      await openFolder(activeGame.folderPath);
+    } catch (err) {
+      console.error("[open_folder]", err);
+      toast.error("打不开游戏目录", { description: String(err) });
+    }
+  }, [activeGame]);
 
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
@@ -468,6 +501,7 @@ export default function App() {
           onViewChange={(v) => startTransition(() => setView(v))}
           onScan={handleScan}
           scanning={scanning}
+          roots={roots}
           onOpenSettings={() => setSettingsOpen(true)}
           searchRef={searchRef}
         />
@@ -556,6 +590,7 @@ export default function App() {
             onPatch={handlePatch}
             onIgnore={handleIgnore}
             onDelete={handleDeleteRequest}
+            onOpenFolder={handleOpenFolder}
           />
         </div>
 
@@ -563,6 +598,8 @@ export default function App() {
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           onRestored={() => void reload()}
+          onRootsChanged={() => void loadRoots()}
+          onScanRoot={(path) => void handleScan(path)}
         />
 
         <DeleteGamesDialog

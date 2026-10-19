@@ -65,6 +65,12 @@ pub fn run() {
             commands::delete_games,
             commands::pick_folder,
             commands::scan_directory,
+            commands::list_scan_roots,
+            commands::add_scan_root,
+            commands::remove_scan_root,
+            commands::open_folder,
+            commands::reveal_path,
+            commands::app_info,
             commands::migrate_legacy
         ])
         .run(tauri::generate_context!())

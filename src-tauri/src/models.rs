@@ -95,8 +95,7 @@ impl GamePatch {
 }
 
 /// 只认 `YYYY-MM-DD`，其余一律拒绝（空串表示"清空"，由调用方另行判断）
-fn is_iso_date(s: &str) -> bool {
-    let b = s.as_bytes();
+fn is_iso_date(s: &str) -> bool {    let b = s.as_bytes();
     b.len() == 10
         && b[4] == b'-'
         && b[7] == b'-'
@@ -201,4 +200,18 @@ mod tests {
         p.title_cn = Some("  ".to_string());
         assert!(p.validate().is_err());
     }
+}
+
+/// 一个"扫描根目录"。用户可以把游戏库放在多个盘/多个目录，逐个登记，
+/// 顶栏扫描按钮就会列出它们，不用每次从磁盘里手动找。
+///
+/// 表在 V1 就建好了（`scan_roots`），只是一直没人写 —— C 阶段的尾巴。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanRoot {
+    pub id: i64,
+    pub path: String,
+    /// 上次扫描完成时间（ISO），从没扫过是 None
+    pub last_scan_at: Option<String>,
+    pub added_at: String,
 }

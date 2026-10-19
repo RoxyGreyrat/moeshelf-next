@@ -851,3 +851,174 @@ mod maintenance_tests {
         assert_eq!(delete_games(&conn, &["nope".to_string()]).unwrap(), 0);
     }
 }
+
+/* ------------------------------------------------------------ 扫描根目录 */
+
+use crate::models::ScanRoot;
+
+/// 规范化根目录：去空白、去末尾分隔符，但保留盘符根（`E:/`）。
+/// 不规范化的话 `E:/galgame` 与 `E:/galgame/` 会被当成两个根目录。
+fn normalize_root(p: &str) -> String {
+    let t = p.trim();
+    let chars: Vec<char> = t.chars().collect();
+    let is_drive_root = chars.len() == 3 && chars[1] == ':' && (chars[2] == '\\' || chars[2] == '/');
+    if !is_drive_root && (t.ends_with('\\') || t.ends_with('/')) {
+        t.trim_end_matches(['\\', '/']).to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+pub fn list_scan_roots(conn: &Connection) -> rusqlite::Result<Vec<ScanRoot>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, last_scan_at, added_at FROM scan_roots ORDER BY added_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ScanRoot {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            last_scan_at: r.get(2)?,
+            added_at: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 登记一个根目录。目录必须真实存在（否则用户会盯着一个永远扫不到东西的条目）。
+/// 重复登记同一个路径只会返回已有那条，不报错。
+pub fn add_scan_root(conn: &Connection, path: &str) -> Result<ScanRoot, String> {
+    let normalized = normalize_root(path);
+    if normalized.is_empty() {
+        return Err("目录路径不能为空".to_string());
+    }
+    if !std::path::Path::new(&normalized).is_dir() {
+        return Err(format!("目录不存在：{normalized}"));
+    }
+
+    conn.execute(
+        "INSERT INTO scan_roots (path, added_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ON CONFLICT(path) DO NOTHING",
+        [&normalized],
+    )
+    .map_err(|e| format!("登记扫描目录失败：{e}"))?;
+
+    conn.query_row(
+        "SELECT id, path, last_scan_at, added_at FROM scan_roots WHERE path = ?1",
+        [&normalized],
+        |r| {
+            Ok(ScanRoot {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                last_scan_at: r.get(2)?,
+                added_at: r.get(3)?,
+            })
+        },
+    )
+    .map_err(|e| format!("读取刚登记的目录失败：{e}"))
+}
+
+pub fn remove_scan_root(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM scan_roots WHERE id = ?1", [id])
+}
+
+/// 扫描成功后打个时间戳。失败不影响扫描结果，所以返回值忽略。
+pub fn touch_scan_root(conn: &Connection, path: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE scan_roots SET last_scan_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE path = ?1",
+        [&normalize_root(path)],
+    )
+}
+
+#[cfg(test)]
+mod scan_root_tests {
+    use super::*;
+    use crate::db::open_at;
+
+    fn temp_db(tag: &str) -> Connection {
+        let dir = std::env::temp_dir().join("moeshelf-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.db"));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        open_at(&path).expect("建库失败")
+    }
+
+    fn real_dir(tag: &str) -> String {
+        let d = std::env::temp_dir().join(format!("moeshelf-root-{tag}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn add_list_remove_roundtrip() {
+        let conn = temp_db("roots");
+        let dir = real_dir("a");
+
+        assert_eq!(list_scan_roots(&conn).unwrap().len(), 0);
+
+        let added = add_scan_root(&conn, &dir).expect("登记失败");
+        assert_eq!(added.path, dir);
+        assert!(added.last_scan_at.is_none(), "刚登记时不该有扫描时间");
+
+        let all = list_scan_roots(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+
+        remove_scan_root(&conn, added.id).unwrap();
+        assert_eq!(list_scan_roots(&conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn duplicate_path_does_not_create_second_row() {
+        let conn = temp_db("roots-dup");
+        let dir = real_dir("b");
+
+        let first = add_scan_root(&conn, &dir).unwrap();
+        let second = add_scan_root(&conn, &dir).unwrap();
+
+        assert_eq!(first.id, second.id, "同一个路径必须复用同一行");
+        assert_eq!(list_scan_roots(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trailing_separator_is_normalized() {
+        let conn = temp_db("roots-norm");
+        let dir = real_dir("c");
+
+        let a = add_scan_root(&conn, &dir).unwrap();
+        let b = add_scan_root(&conn, &format!("{dir}{}", std::path::MAIN_SEPARATOR)).unwrap();
+
+        assert_eq!(a.id, b.id, "多一个结尾分隔符不该算新目录");
+        assert_eq!(b.path, dir, "存进去的路径不该带结尾分隔符");
+    }
+
+    #[test]
+    fn drive_root_keeps_its_separator() {
+        // E:/ 去掉分隔符会变成 E:（盘符相对路径），必须保留
+        let drive = format!("E:{}", std::path::MAIN_SEPARATOR);
+        assert_eq!(normalize_root(&drive), drive);
+    }
+
+    #[test]
+    fn missing_directory_is_rejected() {
+        let conn = temp_db("roots-missing");
+        let bad = std::path::Path::new("Z:")
+            .join("nope")
+            .to_string_lossy()
+            .to_string();
+        assert!(add_scan_root(&conn, &bad).is_err());
+        assert_eq!(list_scan_roots(&conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn touch_updates_last_scan_at() {
+        let conn = temp_db("roots-touch");
+        let dir = real_dir("d");
+        add_scan_root(&conn, &dir).unwrap();
+
+        touch_scan_root(&conn, &dir).unwrap();
+        let row = &list_scan_roots(&conn).unwrap()[0];
+        assert!(row.last_scan_at.is_some(), "扫描后应写入时间戳");
+    }
+}

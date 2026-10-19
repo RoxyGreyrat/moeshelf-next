@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   EyeOff,
+  FolderOpen,
   Loader2,
   Lock,
   MousePointerClick,
@@ -47,6 +48,8 @@ interface DetailPanelProps {
   onIgnore: () => void;
   /** 删除：二次确认后从库里删掉记录 */
   onDelete: () => void;
+  /** 在资源管理器里打开这部游戏的目录 */
+  onOpenFolder: () => void;
 }
 
 function FieldRow({
@@ -137,6 +140,7 @@ export function DetailPanel({
   onPatch,
   onIgnore,
   onDelete,
+  onOpenFolder,
 }: DetailPanelProps) {
   const [draft, setDraft] = useState<Draft | null>(null);
 
@@ -478,9 +482,16 @@ export function DetailPanel({
           </div>
         )}
 
-        <p className="pt-0.5 text-center text-[10.5px] text-muted-foreground">
-          {game.folderPath}
-        </p>
+        {/* 路径本身就是"打开文件夹"的入口：比再挤一个按钮省地方 */}
+        <button
+          type="button"
+          onClick={onOpenFolder}
+          title={`在资源管理器中打开：${game.folderPath}`}
+          className="group flex w-full items-center justify-center gap-1 pt-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <FolderOpen className="size-3 shrink-0 opacity-70 group-hover:opacity-100" />
+          <span className="truncate">{game.folderPath}</span>
+        </button>
       </footer>
     </aside>
   );
