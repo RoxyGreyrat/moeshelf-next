@@ -28,18 +28,18 @@ interface GameDetailPageProps {
   onOpenFolder: () => void;
 }
 
+/** 页面内容的最大宽度。窗口再宽也不无限拉长，但比原来的 1040 宽得多 */
+const PAGE = "mx-auto w-full max-w-[1680px] px-10";
+
 /** 角色头像加载失败时的兜底：从名字里取一个字，配一个按名字固定的底色 */
-function CharacterFallback({ name, className }: { name: string; className?: string }) {
+function CharacterFallback({ name }: { name: string }) {
   let h = 5381;
   for (let i = 0; i < name.length; i += 1) h = ((h << 5) + h + name.charCodeAt(i)) >>> 0;
   const hue = h % 360;
 
   return (
     <div
-      className={cn(
-        "flex h-full w-full items-center justify-center",
-        className,
-      )}
+      className="flex h-full w-full items-center justify-center"
       style={{
         background: `linear-gradient(150deg, hsl(${hue} 26% 88%), hsl(${(hue + 40) % 360} 22% 78%))`,
       }}
@@ -57,7 +57,7 @@ function CharacterCard({ c }: { c: Character }) {
   const [broken, setBroken] = useState(false);
 
   return (
-    <li className="min-w-0">
+    <li className="group min-w-0">
       <div className="relative aspect-[3/4] overflow-hidden rounded-xl bg-muted ring-1 ring-black/[0.06]">
         {src && !broken ? (
           <img
@@ -66,7 +66,7 @@ function CharacterCard({ c }: { c: Character }) {
             loading="lazy"
             decoding="async"
             onError={() => setBroken(true)}
-            className="h-full w-full object-cover object-top"
+            className="h-full w-full object-cover object-top transition-transform duration-300 ease-out group-hover:scale-[1.04]"
           />
         ) : (
           <CharacterFallback name={c.name} />
@@ -98,10 +98,19 @@ function CharacterCard({ c }: { c: Character }) {
   );
 }
 
-/** 一行键值，用于右侧的文件信息 */
+/** 头部右侧的关键数据：把原来散在标题行里的东西集中起来，填掉宽窗口的空洞 */
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10.5px] tracking-[0.02em] text-muted-foreground">{label}</p>
+      <p className="mt-0.5 truncate text-[12.5px] font-medium text-foreground">{children}</p>
+    </div>
+  );
+}
+
 function MetaRow({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-6 border-b border-border py-2 last:border-b-0">
+    <div className="flex items-baseline justify-between gap-5 border-b border-border py-2 last:border-b-0">
       <span className="shrink-0 text-[11.5px] text-muted-foreground">{label}</span>
       <span
         className="min-w-0 truncate text-right text-[12px] text-foreground"
@@ -113,12 +122,30 @@ function MetaRow({ label, value, title }: { label: string; value: string; title?
   );
 }
 
+function SectionHeading({
+  children,
+  right,
+}: {
+  children: React.ReactNode;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-3 flex items-baseline justify-between gap-4 border-b border-border pb-2">
+      <h2 className="text-[12.5px] font-medium tracking-wide text-foreground">{children}</h2>
+      {right}
+    </div>
+  );
+}
+
 /**
  * 全屏详情页。
  *
- * 走整页而不是弹窗/抽屉：角色网格一屏放得下 12~20 个人，弹窗会被高度卡住。
+ * 走整页而不是弹窗/抽屉：角色网格一屏要放几十个人，弹窗会被高度卡住。
  * 数据从 `get_game_detail` 一次拿全（游戏 + 角色），不做分批加载 ——
  * 分两次拉会出现"标题先出来、角色区晚半秒"的跳变。
+ *
+ * 布局是流式的：内容最宽 1680，靠 `auto-fill` 的网格吃掉多出来的宽度。
+ * 旧版固定 1040 居中，窗口一大两边就是两条空白带。
  */
 export function GameDetailPage({
   gameId,
@@ -174,7 +201,7 @@ export function GameDetailPage({
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       {/* 顶栏：返回 + 当前标题 + 主操作 */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-5">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-6">
         <Button
           variant="ghost"
           size="sm"
@@ -221,18 +248,23 @@ export function GameDetailPage({
         ) : !game ? (
           <>
             {/* 骨架：结构与真实内容一致，避免加载完成后大幅跳动 */}
-            <div className="relative border-b border-border px-8 pb-7 pt-10">
-              <div className="mx-auto flex w-full max-w-[1040px] items-end gap-6">
-                <div className="aspect-[2/3] w-[150px] shrink-0 animate-pulse rounded-xl bg-muted" />
+            <div className="border-b border-border">
+              <div className={cn(PAGE, "flex items-end gap-7 pb-8 pt-10")}>
+                <div className="aspect-[2/3] w-[176px] shrink-0 animate-pulse rounded-xl bg-muted" />
                 <div className="flex-1 space-y-3 pb-2">
-                  <div className="h-6 w-2/3 animate-pulse rounded bg-muted" />
+                  <div className="h-7 w-1/2 animate-pulse rounded bg-muted" />
+                  <div className="h-3 w-1/4 animate-pulse rounded bg-muted" />
                   <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
-                  <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
+                </div>
+                <div className="hidden w-[320px] shrink-0 grid-cols-2 gap-4 lg:grid">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="h-8 animate-pulse rounded bg-muted" />
+                  ))}
                 </div>
               </div>
             </div>
-            <div className="mx-auto grid w-full max-w-[1040px] grid-cols-6 gap-4 px-8 py-7">
-              {Array.from({ length: 6 }).map((_, i) => (
+            <div className={cn(PAGE, "grid grid-cols-8 gap-3 py-8")}>
+              {Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="aspect-[3/4] animate-pulse rounded-xl bg-muted" />
               ))}
             </div>
@@ -243,20 +275,23 @@ export function GameDetailPage({
             <div className="relative overflow-hidden border-b border-border">
               <div className="pointer-events-none absolute inset-0" aria-hidden="true">
                 {poster ? (
-                  <img
-                    src={poster}
-                    alt=""
-                    className="h-full w-full scale-110 object-cover opacity-40 blur-2xl"
-                  />
+                  <>
+                    <img
+                      src={poster}
+                      alt=""
+                      className="h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-r from-background/70 via-background/60 to-background/80" />
+                    <div className="absolute inset-0 bg-gradient-to-b from-background/20 via-background/50 to-background" />
+                  </>
                 ) : (
                   <div className="h-full w-full bg-gradient-to-br from-primary/[0.10] to-transparent" />
                 )}
-                <div className="absolute inset-0 bg-gradient-to-b from-background/50 via-background/75 to-background" />
               </div>
 
-              <div className="relative mx-auto flex w-full max-w-[1040px] items-end gap-6 px-8 pb-7 pt-9">
+              <div className={cn(PAGE, "relative flex items-end gap-7 pb-8 pt-10")}>
                 {/* 竖版封面 */}
-                <div className="aspect-[2/3] w-[150px] shrink-0 overflow-hidden rounded-xl shadow-[0_18px_40px_-18px_rgba(24,24,27,0.5)] ring-1 ring-black/10">
+                <div className="aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
                   {poster ? (
                     <img
                       src={poster}
@@ -265,101 +300,122 @@ export function GameDetailPage({
                     />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/25 to-primary/5">
-                      <span className="select-none font-serif text-[56px] leading-none text-white/80">
+                      <span className="select-none font-serif text-[64px] leading-none text-white/80">
                         {(game.titleCn || game.title).slice(0, 1)}
                       </span>
                     </div>
                   )}
                 </div>
 
+                {/* 标题区 */}
                 <div className="min-w-0 flex-1 pb-1">
-                  <div className="flex items-start gap-3">
-                    <div className="min-w-0 flex-1">
-                      <h1 className="truncate text-[24px] font-semibold leading-tight tracking-tight">
-                        {game.titleCn || game.title}
-                      </h1>
-                      {game.originalTitle && game.originalTitle !== game.titleCn && (
-                        <p className="mt-1 truncate text-[12.5px] text-muted-foreground">
-                          {game.originalTitle}
-                        </p>
-                      )}
-                      {game.title && game.title !== game.originalTitle && (
-                        <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground/80">
-                          {game.title}
-                        </p>
-                      )}
-                    </div>
+                  <h1 className="text-[30px] font-semibold leading-[1.15] tracking-tight">
+                    {game.titleCn || game.title}
+                  </h1>
+                  {(game.originalTitle || game.title) && (
+                    <p className="mt-1.5 truncate text-[12.5px] text-muted-foreground">
+                      {[game.originalTitle, game.title].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
 
-                    {game.rating > 0 && (
-                      <div className="flex shrink-0 items-center gap-1 rounded-lg bg-card px-2.5 py-1.5 shadow-[0_2px_10px_-6px_rgba(24,24,27,0.5)] ring-1 ring-border">
-                        <Star className="size-3.5 fill-amber-400 text-amber-400" />
-                        <span className="text-[13px] font-semibold tabular-nums">
-                          {game.rating.toFixed(1)}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground">
-                          {game.ratingSource || ""}
-                        </span>
-                      </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                      {game.developer || "会社未知"}
+                    </span>
+                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                      {game.released || "发售日未知"}
+                    </span>
+                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                      {engineLabel(game.engine)}
+                    </span>
+                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                      {PLATFORM_LABEL[game.platform]}
+                    </span>
+                    {game.completed && (
+                      <span className="rounded-md bg-primary/10 px-2 py-1 text-[11.5px] font-medium text-primary">
+                        已通关
+                      </span>
                     )}
                   </div>
 
-                  {/* 元信息：会社 · 发售 · 引擎 · 平台 */}
-                  <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
-                    {[
-                      game.developer,
-                      game.released,
-                      engineLabel(game.engine),
-                      PLATFORM_LABEL[game.platform],
-                      game.completed ? "已通关" : "",
-                    ]
-                      .filter(Boolean)
-                      .map((item, i) => (
-                        <span key={`${item}-${i}`} className="flex items-center gap-2">
-                          {i > 0 && <span className="text-border">·</span>}
-                          {item}
-                        </span>
-                      ))}
-                  </div>
-
                   {game.tags.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1">
-                      {game.tags.slice(0, 12).map((t) => (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {game.tags.slice(0, 14).map((t) => (
                         <span
                           key={t}
-                          className="rounded-full border border-border bg-card/70 px-2 py-[1px] text-[10.5px] text-muted-foreground"
+                          className="rounded-full border border-border bg-card/60 px-2 py-[1px] text-[10.5px] text-muted-foreground"
                         >
                           {t}
                         </span>
                       ))}
-                      {game.tags.length > 12 && (
+                      {game.tags.length > 14 && (
                         <span className="px-1 text-[10.5px] text-muted-foreground/70">
-                          +{game.tags.length - 12}
+                          +{game.tags.length - 14}
                         </span>
                       )}
                     </div>
                   )}
                 </div>
+
+                {/* 右侧关键数据：填掉标题右边的空白带 */}
+                <div className="hidden w-[320px] shrink-0 pb-1 lg:block">
+                  <div className="rounded-xl border border-border bg-card/80 p-4 backdrop-blur-[2px]">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <p className="text-[10.5px] text-muted-foreground">评分</p>
+                        <div className="mt-0.5 flex items-baseline gap-1.5">
+                          <Star className="size-3.5 translate-y-[-1px] fill-amber-400 text-amber-400" />
+                          <span className="text-[22px] font-semibold leading-none tabular-nums">
+                            {game.rating > 0 ? game.rating.toFixed(1) : "—"}
+                          </span>
+                          <span className="text-[10.5px] text-muted-foreground">/ 10</span>
+                        </div>
+                      </div>
+                      {game.ratingSource && (
+                        <span className="mb-0.5 rounded-full border border-border px-1.5 py-[1px] text-[9.5px] text-muted-foreground">
+                          {game.ratingSource}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-3.5 grid grid-cols-2 gap-x-5 gap-y-3 border-t border-border pt-3.5">
+                      <Fact label="发售">{game.released ? game.released.slice(0, 4) : "—"}</Fact>
+                      <Fact label="引擎">{engineLabel(game.engine)}</Fact>
+                      <Fact label="文件数">
+                        {game.fileCount > 0 ? `${formatCount(game.fileCount)} 个` : "—"}
+                      </Fact>
+                      <Fact label="体积">
+                        {game.dirSize > 0 ? formatBytes(game.dirSize) : "未统计"}
+                      </Fact>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* ---------------------------------------------------------- 主体 */}
-            <div className="mx-auto w-full max-w-[1040px] px-8 py-7">
-              <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
+            <div className={cn(PAGE, "pt-7")}>
+              <div className="grid grid-cols-1 gap-9 lg:grid-cols-[minmax(0,1fr)_320px]">
                 {/* 左：简介 + 角色 */}
-                <div className="min-w-0 space-y-8">
+                <div className="min-w-0">
                   <section>
-                    <h2 className="text-[12.5px] font-medium text-foreground">简介</h2>
+                    <SectionHeading>简介</SectionHeading>
                     <p
                       className={cn(
-                        "selectable mt-2 whitespace-pre-line text-[12px] leading-[1.85] text-muted-foreground",
-                        // 长简介折 8 行：真实数据里 700~1500 字的简介很常见，
-                        // 全展开会把角色区推到两三屏之外
-                        !descOpen && description.length > 260 && "line-clamp-[8]",
+                        "selectable whitespace-pre-line text-[12.5px] leading-[1.9] text-muted-foreground",
+                        // 宽窗口排两栏：1250px 一行排 90 多个汉字根本没法读，两栏各 45 字正合适
+                        "lg:columns-2 lg:gap-x-12",
+                        // 折 8 行：真实数据里简介常有 700~1500 字，全展开会把角色区推到两三屏之外。
+                        // 多栏布局下 line-clamp 不起作用，改用限高 + overflow-hidden。
+                        !descOpen &&
+                          description.length > 320 &&
+                          "max-h-[190px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_86%,transparent)]",
                       )}
                     >
-                      {description || "这部游戏还没有简介（旧库刮削时没抓到，或本身就是没收录的条目）。"}
+                      {description ||
+                        "这部游戏还没有简介（旧库刮削时没抓到，或本身就是没收录的条目）。"}
                     </p>
-                    {description.length > 260 && (
+                    {description.length > 320 && (
                       <button
                         type="button"
                         onClick={() => setDescOpen((v) => !v)}
@@ -370,29 +426,32 @@ export function GameDetailPage({
                     )}
                   </section>
 
-                  <section>
-                    <div className="flex items-baseline justify-between gap-3">
-                      <h2 className="flex items-center gap-1.5 text-[12.5px] font-medium text-foreground">
+                  <section className="mt-9">
+                    <SectionHeading
+                      right={
+                        <p className="text-[11px] tabular-nums text-muted-foreground">
+                          {characters.length > 0
+                            ? `共 ${formatCount(characters.length)} 位${
+                                withCv > 0 ? ` · ${withCv} 位有配音` : ""
+                              }`
+                            : ""}
+                        </p>
+                      }
+                    >
+                      <span className="flex items-center gap-1.5">
                         <Users className="size-3.5 text-muted-foreground" />
                         角色
-                      </h2>
-                      <p className="text-[11px] tabular-nums text-muted-foreground">
-                        {characters.length > 0
-                          ? `共 ${formatCount(characters.length)} 位${
-                              withCv > 0 ? ` · ${withCv} 位有配音` : ""
-                            }`
-                          : ""}
-                      </p>
-                    </div>
+                      </span>
+                    </SectionHeading>
 
                     {characters.length === 0 ? (
-                      <p className="mt-2 rounded-xl border border-dashed border-border px-4 py-8 text-center text-[11.5px] leading-relaxed text-muted-foreground">
+                      <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-[11.5px] leading-relaxed text-muted-foreground">
                         这部还没有角色数据。
                         <br />
                         旧库刮削时只抓了 196 部，其余条目要等 D 阶段接上刮削后才有。
                       </p>
                     ) : (
-                      <ul className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-x-3 gap-y-4">
+                      <ul className="grid grid-cols-[repeat(auto-fill,minmax(126px,1fr))] gap-x-3.5 gap-y-5">
                         {characters.map((c) => (
                           <CharacterCard key={`${c.name}-${c.sortOrder}`} c={c} />
                         ))}
@@ -401,45 +460,41 @@ export function GameDetailPage({
                   </section>
                 </div>
 
-                {/* 右：文件信息 */}
+                {/* 右：文件信息，跟着滚动吸顶 */}
                 <aside className="min-w-0">
-                  <h2 className="text-[12.5px] font-medium text-foreground">文件</h2>
-                  <div className="mt-2 rounded-xl border border-border bg-card px-3.5 py-1">
-                    <MetaRow
-                      label="目录"
-                      value={game.folderPath}
-                      title={game.folderPath}
-                    />
-                    <MetaRow
-                      label="主程序"
-                      value={game.launchExe || "未识别"}
-                      title={game.launchExe}
-                    />
-                    <MetaRow label="文件数" value={`${formatCount(game.fileCount)} 个`} />
-                    {game.dirSize > 0 && (
-                      <MetaRow label="体积" value={formatBytes(game.dirSize)} />
+                  <div className="lg:sticky lg:top-0">
+                    <SectionHeading>文件</SectionHeading>
+                    <div className="rounded-xl border border-border bg-card px-3.5 py-1">
+                      <MetaRow label="目录" value={game.folderPath} title={game.folderPath} />
+                      <MetaRow
+                        label="主程序"
+                        value={game.launchExe || "未识别"}
+                        title={game.launchExe}
+                      />
+                      <MetaRow label="入库" value={game.firstSeenAt.slice(0, 10)} />
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={onOpenFolder}
+                      className="mt-2 h-8 w-full gap-1.5"
+                    >
+                      <FolderOpen className="size-3.5" />
+                      在资源管理器中打开
+                    </Button>
+
+                    {game.lockedFields.length > 0 && (
+                      <p className="mt-3 text-[10.5px] leading-relaxed text-muted-foreground/70">
+                        已锁定 {game.lockedFields.length} 个字段，重扫和刮削都不会覆盖。
+                      </p>
                     )}
-                    <MetaRow label="入库" value={game.firstSeenAt.slice(0, 10)} />
                   </div>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onOpenFolder}
-                    className="mt-2 h-8 w-full gap-1.5"
-                  >
-                    <FolderOpen className="size-3.5" />
-                    在资源管理器中打开
-                  </Button>
-
-                  {game.lockedFields.length > 0 && (
-                    <p className="mt-3 text-[10.5px] leading-relaxed text-muted-foreground/70">
-                      已锁定 {game.lockedFields.length} 个字段，重扫和刮削都不会覆盖。
-                    </p>
-                  )}
                 </aside>
               </div>
             </div>
+
+            <div className="h-12" />
           </>
         )}
       </div>
