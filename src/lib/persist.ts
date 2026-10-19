@@ -69,7 +69,6 @@ export function sanitizeUi(ui: Partial<PersistedUi>): {
     platforms: list(ui.filters?.platforms) as Filters["platforms"],
     developers: list(ui.filters?.developers),
     engines: list(ui.filters?.engines) as Filters["engines"],
-    tags: list(ui.filters?.tags),
   };
 
   return {

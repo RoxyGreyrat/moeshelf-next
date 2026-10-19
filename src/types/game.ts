@@ -102,7 +102,6 @@ export interface Filters {
   /** 会社：扫描/迁移进来的 `developer`，空串的归到"未登记" */
   developers: string[];
   engines: Engine[];
-  tags: string[];
 }
 
 /** 主列表排序方式 */

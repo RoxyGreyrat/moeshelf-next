@@ -47,7 +47,6 @@ const EMPTY_FILTERS: Filters = {
   platforms: [],
   developers: [],
   engines: [],
-  tags: [],
 };
 
 /** 默认按发售日倒序 —— 新作在前，和"书架"的直觉一致（`persist.sanitizeUi` 里的兜底同此） */
@@ -218,8 +217,6 @@ export default function App() {
         return false;
       if (filters.engines.length && !filters.engines.includes(g.engine))
         return false;
-      if (filters.tags.length && !filters.tags.every((t) => g.tags.includes(t)))
-        return false;
       if (!q) return true;
       const haystack = [
         g.titleCn,
@@ -267,10 +264,7 @@ export default function App() {
   }, [cursorId, filtered, selectedIds]);
 
   const activeCount =
-    filters.platforms.length +
-    filters.developers.length +
-    filters.engines.length +
-    filters.tags.length;
+    filters.platforms.length + filters.developers.length + filters.engines.length;
 
   const developerCounts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -295,19 +289,6 @@ export default function App() {
     for (const g of games) map[g.engine] = (map[g.engine] ?? 0) + 1;
     return map;
   }, [games]);
-
-  const tagCounts = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const g of games)
-      for (const t of g.tags) map[t] = (map[t] ?? 0) + 1;
-    return map;
-  }, [games]);
-
-  /** 标签候选项不再手写，直接由库里的数据汇总 */
-  const allTags = useMemo(
-    () => Array.from(new Set(games.flatMap((g) => g.tags))).sort(),
-    [games],
-  );
 
   /* ------------------------------------------------------------------ 交互 */
 
@@ -783,8 +764,6 @@ export default function App() {
             platformCounts={platformCounts}
             developerCounts={developerCounts}
             engineCounts={engineCounts}
-            tagCounts={tagCounts}
-            allTags={allTags}
             activeCount={activeCount}
             collapsed={sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
@@ -796,9 +775,6 @@ export default function App() {
             }
             onToggleEngine={(e) =>
               setFilters((f) => ({ ...f, engines: toggleIn(f.engines, e) }))
-            }
-            onToggleTag={(t) =>
-              setFilters((f) => ({ ...f, tags: toggleIn(f.tags, t) }))
             }
             onClearAll={clearFilters}
           />

@@ -38,8 +38,6 @@ interface FilterSidebarProps {
   platformCounts: Record<Platform, number>;
   developerCounts: Record<string, number>;
   engineCounts: Record<string, number>;
-  tagCounts: Record<string, number>;
-  allTags: string[];
   activeCount: number;
   /** 收起成一窄条，给中间的书架腾宽度 */
   collapsed: boolean;
@@ -47,7 +45,6 @@ interface FilterSidebarProps {
   onTogglePlatform: (p: Platform) => void;
   onToggleDeveloper: (d: string) => void;
   onToggleEngine: (e: Engine) => void;
-  onToggleTag: (t: string) => void;
   onClearAll: () => void;
 }
 
@@ -219,15 +216,12 @@ export function FilterSidebar({
   platformCounts,
   developerCounts,
   engineCounts,
-  tagCounts,
-  allTags,
   activeCount,
   collapsed,
   onToggleCollapsed,
   onTogglePlatform,
   onToggleDeveloper,
   onToggleEngine,
-  onToggleTag,
   onClearAll,
 }: FilterSidebarProps) {
   const [search, setSearch] = useState("");
@@ -267,20 +261,11 @@ export function FilterSidebar({
     return buildOptions(values, filters.engines, search, "count");
   }, [engineCounts, filters.engines, search]);
 
-  const tagOptions = useMemo<Option[]>(() => {
-    const values = allTags
-      .filter((t) => (tagCounts[t] ?? 0) > 0)
-      .map((t) => ({ value: t, label: t, count: tagCounts[t] ?? 0 }));
-    // 标签也不再按数量排（数量多的标签常年占满前几行，反而找不到想要的）
-    return buildOptions(values, filters.tags, search, "name");
-  }, [allTags, filters.tags, search, tagCounts]);
-
   const visiblePlatforms = buildOptions(platformOptions, filters.platforms, search, "name");
   const totalShown =
     visiblePlatforms.length +
     developerOptions.length +
-    engineOptions.length +
-    tagOptions.length;
+    engineOptions.length;
 
   /* ---------------------------------------------------------------- 收起态 */
   // 收成 44px 的窄条：中间的书架能多出 200px，窗口小的时候很有用。
@@ -353,7 +338,7 @@ export function FilterSidebar({
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索会社 / 引擎 / 标签"
+            placeholder="搜索会社 / 引擎"
             aria-label="搜索筛选项"
             className="h-7 rounded-md border-border bg-card pl-7 pr-7 text-[12px] placeholder:text-muted-foreground/80"
           />
@@ -385,14 +370,6 @@ export function FilterSidebar({
             selected={filters.engines}
             onToggle={(v) => onToggleEngine(v as Engine)}
             searching={searching}
-          />
-          <FilterGroup
-            title="标签"
-            options={tagOptions}
-            selected={filters.tags}
-            onToggle={onToggleTag}
-            searching={searching}
-            defaultOpen={false}
           />
           <FilterGroup
             title="平台"
