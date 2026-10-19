@@ -29,7 +29,7 @@ import { ScanStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { DeleteGamesDialog } from "@/components/detail/DeleteGamesDialog";
-import { SettingsDialog } from "@/components/settings/SettingsDialog";
+import { SettingsPage } from "@/components/settings/SettingsPage";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -428,6 +428,8 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // 设置是整页，由它自己处理键盘；书架那套快捷键在这里必须让位
+      if (settingsOpen) return;
       const target = e.target as HTMLElement | null;
       const typing =
         !!target &&
@@ -506,9 +508,25 @@ export default function App() {
     moveCursor,
     selectMode,
     selectedIds.length,
+    settingsOpen,
   ]);
 
   /* -------------------------------------------------------------- 渲染 */
+
+  // 设置是整页视图，不是弹窗：直接换掉整个画面，退出后书架状态原样还在
+  if (settingsOpen) {
+    return (
+      <TooltipProvider delayDuration={300}>
+        <SettingsPage
+          gameCount={games.length}
+          onClose={() => setSettingsOpen(false)}
+          onRestored={() => void reload()}
+          onRootsChanged={() => void loadRoots()}
+          onScanRoot={(path) => void handleScan(path)}
+        />
+      </TooltipProvider>
+    );
+  }
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -612,14 +630,6 @@ export default function App() {
             onOpenFolder={handleOpenFolder}
           />
         </div>
-
-        <SettingsDialog
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          onRestored={() => void reload()}
-          onRootsChanged={() => void loadRoots()}
-          onScanRoot={(path) => void handleScan(path)}
-        />
 
         <DeleteGamesDialog
           open={deleteTarget.length > 0}
