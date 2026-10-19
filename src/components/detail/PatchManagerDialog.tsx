@@ -329,7 +329,7 @@ export function PatchManagerDialog({
         <div className="rounded-xl border border-dashed border-border px-5 py-8 text-center">
           <p className="text-[12.5px] font-medium">这部游戏还没有装过补丁</p>
           <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
-            点右上角「导入补丁」，可以选 zip、已经解压好的文件夹，或安装器 exe。
+            点右上角「导入补丁」，可以选 zip / 7z / rar / tar 系压缩包、已经解压好的文件夹，或安装器 exe。
             <br />
             应用前会先列出会覆盖哪些文件，并自动备份原文件。
           </p>

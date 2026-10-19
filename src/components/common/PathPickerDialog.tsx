@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 
 const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
 /** 补丁包：zip 能直接读；7z/rar 会提示先解压；exe 是安装器 */
-const PATCH_EXT = /\.(zip|7z|rar|exe)$/i;
+const PATCH_EXT = /\.(zip|7z|rar|exe|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 
 interface PathPickerDialogProps {
   open: boolean;
@@ -120,7 +120,7 @@ export function PathPickerDialog({
             {mode === "folder"
               ? "进入目标文件夹后点右下角确认；这里不调用系统对话框。"
               : mode === "patch"
-                ? "选一个 zip / exe，或者进入补丁文件夹后直接确认。7z / rar 需要先解压。"
+                ? "选补丁包（zip / 7z / rar / tar 系）或安装器 exe；已经解压好的文件夹也可以直接确认。"
                 : "支持 jpg / png / webp / gif / bmp。"}
           </DialogDescription>
         </DialogHeader>

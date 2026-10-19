@@ -335,6 +335,249 @@ fn unzip_to(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 解压 7z。
+///
+/// 7z 的文件名在格式里就是 UTF-16，不存在 zip 那种「GBK 名字没打标记」的乱码问题，
+/// 所以这里不需要编码兜底。越界条目（`../xxx`）和 zip 一样直接跳过。
+///
+/// 为什么用纯 Rust 的 sevenz-rust2 而不是调用 7z.exe：
+/// 用户机器上不一定装了 7-Zip，让软件在没装解压工具的机器上也能装补丁，
+/// 才是这个功能的意义。
+fn un7z_to(src: &Path, dest: &Path) -> Result<(), String> {
+    use sevenz_rust2::{ArchiveReader, Password};
+
+    let file = std::fs::File::open(src).map_err(|e| format!("打开压缩包失败：{e}"))?;
+    let mut reader = ArchiveReader::new(file, Password::empty())
+        .map_err(|e| friendly_archive_error("这个 7z 打不开", e))?;
+
+    // 闭包只能返回 sevenz 的 Error，把 IO 错误先记下来，循环结束再抛出去。
+    let mut io_error: Option<String> = None;
+
+    reader
+        .for_each_entries(|entry, rdr| {
+            if io_error.is_some() {
+                return Ok(false);
+            }
+
+            let name = entry.name().replace('\\', "/");
+            let Some(out) = join_rel(dest, &name) else {
+                return Ok(true); // 越界条目：跳过，不中断整个包
+            };
+
+            if entry.is_directory() {
+                if let Err(e) = std::fs::create_dir_all(&out) {
+                    io_error = Some(format!("创建目录失败 {}：{e}", out.display()));
+                    return Ok(false);
+                }
+                return Ok(true);
+            }
+
+            if let Some(parent) = out.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    io_error = Some(format!("创建目录失败 {}：{e}", parent.display()));
+                    return Ok(false);
+                }
+            }
+
+            match std::fs::File::create(&out) {
+                Ok(mut target) => {
+                    if let Err(e) = io::copy(rdr, &mut target) {
+                        io_error = Some(format!("解压写入失败 {}：{e}", out.display()));
+                        return Ok(false);
+                    }
+                }
+                Err(e) => {
+                    io_error = Some(format!("写入失败 {}：{e}", out.display()));
+                    return Ok(false);
+                }
+            }
+
+            Ok(true)
+        })
+        .map_err(|e| friendly_archive_error("解压 7z 失败", e))?;
+
+    match io_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/* -------------------------------------------------------- 其它常见压缩格式 */
+
+/// 界面文案里列的"支持哪些格式"，和 `archive_kind` 必须保持一致
+const SUPPORTED_FORMATS: &str = "zip / 7z / rar / tar / tar.gz / tar.bz2 / tar.xz";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compression {
+    Gz,
+    Bz2,
+    Xz,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveKind {
+    Zip,
+    SevenZ,
+    Rar,
+    Tar(Option<Compression>),
+}
+
+/// 按文件名判断这是哪种压缩包。`None` = 我们不认识。
+///
+/// 先看双重后缀（`.tar.gz`）：否则 `rsplit_once('.')` 只会拿到 `gz`，
+/// 会被误判成"单文件压缩包"。
+fn archive_kind(src: &Path) -> Option<ArchiveKind> {
+    let name = src.file_name()?.to_string_lossy().to_lowercase();
+
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        return Some(ArchiveKind::Tar(Some(Compression::Gz)));
+    }
+    if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") {
+        return Some(ArchiveKind::Tar(Some(Compression::Bz2)));
+    }
+    if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+        return Some(ArchiveKind::Tar(Some(Compression::Xz)));
+    }
+
+    match name.rsplit_once('.')?.1 {
+        "zip" => Some(ArchiveKind::Zip),
+        "7z" => Some(ArchiveKind::SevenZ),
+        "rar" => Some(ArchiveKind::Rar),
+        "tar" => Some(ArchiveKind::Tar(None)),
+        _ => None,
+    }
+}
+
+/// 加密压缩包给一句人话，别把底层英文原样抛给用户。
+///
+/// 国内补丁包偶尔会带密码（汉化组防搬运），而我们没有"输密码"的界面；
+/// 与其让用户看到 `Password for encrypted archive not specified`，
+/// 不如直接告诉他下一步该怎么办。
+fn friendly_archive_error(context: &str, err: impl std::fmt::Display) -> String {
+    let text = err.to_string();
+    let lower = text.to_lowercase();
+    if lower.contains("password") || lower.contains("encrypted") {
+        return format!("{context}：这个压缩包有密码。请先用解压软件解开，再选解压出来的文件夹。");
+    }
+    format!("{context}：{text}")
+}
+fn extract_archive(src: &Path, dest: &Path, kind: ArchiveKind) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+
+    let result = match kind {
+        ArchiveKind::Zip => unzip_to(src, dest),
+        ArchiveKind::SevenZ => un7z_to(src, dest),
+        ArchiveKind::Rar => unrar_to(src, dest),
+        ArchiveKind::Tar(compression) => untar_to(src, dest, compression),
+    };
+
+    if result.is_err() {
+        // 解压失败会留下半个包：直接清掉，别让它躺在暂存目录里占地方
+        let _ = std::fs::remove_dir_all(dest);
+    }
+    result
+}
+
+/// 解压 rar（RAR4 / RAR5）。
+///
+/// 用 unrar 官方源码：纯 Rust 的 `rar` crate 对 RAR5 的常规压缩支持不全，
+/// 而国内汉化补丁大量是 WinRAR 默认的 RAR5。
+/// 与 7z 一样逐条解到自己的目标路径，靠 `join_rel` 挡住 `../` 越界。
+fn unrar_to(src: &Path, dest: &Path) -> Result<(), String> {
+    use unrar::Archive;
+
+    let mut archive = Archive::new(src)
+        .open_for_processing()
+        .map_err(|e| friendly_archive_error("这个 rar 打不开", e))?;
+
+    loop {
+        let Some(header) = archive
+            .read_header()
+            .map_err(|e| format!("读取 rar 目录失败：{e}"))?
+        else {
+            break;
+        };
+
+        let name = header.entry().filename.to_string_lossy().replace('\\', "/");
+        let is_file = header.entry().is_file();
+
+        let Some(out) = join_rel(dest, &name) else {
+            archive = header
+                .skip()
+                .map_err(|e| format!("跳过 rar 条目失败：{e}"))?;
+            continue;
+        };
+
+        if is_file {
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败 {}：{e}", parent.display()))?;
+            }
+            archive = header
+                .extract_to(&out)
+                .map_err(|e| friendly_archive_error(&format!("解压写入失败 {name}"), e))?;
+        } else {
+            let _ = std::fs::create_dir_all(&out);
+            archive = header
+                .skip()
+                .map_err(|e| format!("跳过 rar 条目失败：{e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// 解压 tar / tar.gz / tar.bz2 / tar.xz。
+///
+/// 只接受普通文件和目录：符号链接、设备文件一律跳过 —— 补丁包里不需要它们，
+/// 而解出链接会带来"写到包外"的风险。
+fn untar_to(src: &Path, dest: &Path, compression: Option<Compression>) -> Result<(), String> {
+    let file = std::fs::File::open(src).map_err(|e| format!("打开压缩包失败：{e}"))?;
+
+    let reader: Box<dyn std::io::Read> = match compression {
+        Some(Compression::Gz) => Box::new(flate2::read::GzDecoder::new(file)),
+        Some(Compression::Bz2) => Box::new(bzip2::read::BzDecoder::new(file)),
+        Some(Compression::Xz) => Box::new(lzma_rust2::XzReader::new(file, true)),
+        None => Box::new(file),
+    };
+
+    let mut archive = tar::Archive::new(reader);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("这个 tar 打不开：{e}"))?;
+
+    for item in entries {
+        let mut entry = item.map_err(|e| format!("读取 tar 条目失败：{e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("tar 条目路径非法：{e}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let Some(out) = join_rel(dest, &path) else {
+            continue;
+        };
+
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            let _ = std::fs::create_dir_all(&out);
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录失败 {}：{e}", parent.display()))?;
+        }
+        entry
+            .unpack(&out)
+            .map_err(|e| format!("解压写入失败 {}：{e}", out.display()))?;
+    }
+
+    Ok(())
+}
 /// 清理过期的暂存目录（每次预览顺手做，不需要定时任务）
 fn clean_expired(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -375,39 +618,30 @@ pub fn preview(app: &AppHandle, game: &Game, source: &str) -> Result<PatchPrevie
     let (kind, root, installer, staging): (String, PathBuf, bool, Option<PathBuf>) =
         if src.is_dir() {
             ("folder".to_string(), strip_single_root(&src), false, None)
+        } else if src
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false)
+        {
+            // 安装器 exe 自己会弹向导，不当压缩包解
+            ("installer".to_string(), src.clone(), true, None)
+        } else if let Some(archive) = archive_kind(&src) {
+            let dest = base.join(&id);
+            extract_archive(&src, &dest, archive)?;
+            (
+                "archive".to_string(),
+                strip_single_root(&dest),
+                false,
+                Some(dest),
+            )
         } else {
             let ext = src
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-
-            match ext.as_str() {
-                "zip" => {
-                    let dest = base.join(&id);
-                    std::fs::create_dir_all(&dest)
-                        .map_err(|e| format!("创建暂存目录失败：{e}"))?;
-                    unzip_to(&src, &dest)?;
-                    (
-                        "archive".to_string(),
-                        strip_single_root(&dest),
-                        false,
-                        Some(dest),
-                    )
-                }
-                "exe" => ("installer".to_string(), src.clone(), true, None),
-                "rar" | "7z" => {
-                    return Err(
-                        "这个格式需要先用解压软件解开（右键 → 解压到当前文件夹），\
-                         然后在这里选择解压出来的文件夹。zip 可以直接选。"
-                            .to_string(),
-                    );
-                }
-                other => {
-                    return Err(format!(
-                        "不认识的补丁格式「.{other}」。可以选 zip、文件夹，或安装器 exe。"
-                    ));
-                }
-            }
+            return Err(format!(
+                "不认识的补丁格式「.{ext}」。可以选 {SUPPORTED_FORMATS}、文件夹，或安装器 exe。"
+            ));
         };
 
     let default_name = src
@@ -1135,9 +1369,90 @@ mod tests {
         assert_eq!(join_rel(base, "./a.txt").unwrap(), base.join("a.txt"));
     }
 
+    /// 7z 是纯 Rust 解的：造一个真包（含中文名和子目录）走一遍解压。
+    /// 国内汉化补丁大量是 7z，这条链路坏掉就等于「补丁装不上」。
     #[test]
-    fn strips_single_wrapper_dir_only() {
-        let one = tmp_dir("strip-one");
+    fn extracts_7z_archive() {
+        let dir = tmp_dir("7z");
+
+        let src = dir.join("pack");
+        std::fs::create_dir_all(src.join("data")).unwrap();
+        std::fs::write(src.join("说明.txt"), b"hello").unwrap();
+        std::fs::write(src.join("data").join("patch.bin"), b"0123456789").unwrap();
+
+        let archive = dir.join("patch.7z");
+        sevenz_rust2::compress_to_path(&src, &archive).expect("造 7z 失败");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        un7z_to(&archive, &out).expect("解压 7z 失败");
+
+        assert_eq!(
+            std::fs::read_to_string(out.join("说明.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read(out.join("data").join("patch.bin")).unwrap().len(),
+            10
+        );
+    }
+
+    /// tar.gz 也是补丁包常见形态。造一个包走一遍解压。
+    #[test]
+    fn extracts_tar_gz_archive() {
+        let dir = tmp_dir("targz");
+
+        let src = dir.join("pack");
+        std::fs::create_dir_all(src.join("data")).unwrap();
+        std::fs::write(src.join("说明.txt"), b"hello").unwrap();
+        std::fs::write(src.join("data").join("patch.bin"), b"0123456789").unwrap();
+
+        let gz = dir.join("patch.tar.gz");
+        let file = std::fs::File::create(&gz).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        builder.append_dir_all("pack", &src).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_archive(&gz, &out, ArchiveKind::Tar(Some(Compression::Gz))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(out.join("pack").join("说明.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    /// 扩展名识别：双重后缀优先，别把 .tar.gz 当成单文件 gz。
+    #[test]
+    fn detects_archive_kind_by_name() {
+        use ArchiveKind::*;
+
+        let cases: &[(&str, ArchiveKind)] = &[
+            ("a.zip", Zip),
+            ("a.7z", SevenZ),
+            ("a.rar", Rar),
+            ("a.tar", Tar(None)),
+            ("a.tar.gz", Tar(Some(Compression::Gz))),
+            ("a.tgz", Tar(Some(Compression::Gz))),
+            ("a.tar.bz2", Tar(Some(Compression::Bz2))),
+            ("a.tbz2", Tar(Some(Compression::Bz2))),
+            ("a.tar.xz", Tar(Some(Compression::Xz))),
+            ("a.txz", Tar(Some(Compression::Xz))),
+        ];
+
+        for (name, expected) in cases {
+            let kind = archive_kind(Path::new(name))
+                .unwrap_or_else(|| panic!("{name} 应该被认出来"));
+            assert_eq!(&kind, expected, "{name} 识别错了");
+        }
+
+        assert!(archive_kind(Path::new("a.txt")).is_none());
+        assert!(archive_kind(Path::new("a.gz")).is_none(), "单文件 gz 不是补丁包");
+    }
+    #[test]
+    fn strips_single_wrapper_dir_only() {        let one = tmp_dir("strip-one");
         let inner = one.join("汉化补丁");
         std::fs::create_dir_all(&inner).unwrap();
         std::fs::write(inner.join("game.exe"), b"x").unwrap();

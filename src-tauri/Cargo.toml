@@ -31,6 +31,22 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # 国内补丁包里的中文文件名常常是 GBK 且没打 UTF-8 标记，按 UTF-8 解会变乱码
 encoding_rs = "0.8"
+# 7z 补丁包：只用解压。aes256 / bzip2 / ppmd 覆盖国内汉化组常见的打包方式，
+# 不开 compress——软件只读不写 7z。
+sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["aes256", "bzip2", "ppmd"] }
+# rar：走 unrar 官方源码（RAR4 / RAR5 全支持）。纯 Rust 的 rar crate 对 RAR5
+# 的常规压缩支持不全，汉化补丁恰恰大量是 RAR5，所以这里接受 C++ 编译。
+unrar = "0.5.8"
+# tar 家族：tar / tar.gz / tar.bz2 / tar.xz
+tar = "0.4.46"
+flate2 = "1.1.10"
+bzip2 = "0.6.1"
+# xz 用 lzma-rust2（纯 Rust，且 sevenz-rust2 本来就依赖它，不额外增重）
+lzma-rust2 = "0.23.0"
+
+[dev-dependencies]
+# 只有测试要造 7z 样本，正式构建不编译压缩器
+sevenz-rust2 = { version = "0.24.1", features = ["compress"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
