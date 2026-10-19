@@ -1214,6 +1214,60 @@ pub fn set_cover(
         .ok_or_else(|| format!("更新后读不回来：{id}"))
 }
 
+/* ------------------------------------------------------------ 多源 id 记录 */
+
+/// 这个游戏在某个源里的条目 id（`vndb` / `bangumi` / `ymgal`）。
+///
+/// 存在 `game_sources` 里，就是为了让"补全中文简介 / 声优"这类操作第二次不用重新搜：
+/// 搜一次要一次网络往返，而且模糊搜索还可能搜偏。
+pub fn get_source_id(
+    conn: &Connection,
+    game_id: &str,
+    source: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT source_id FROM game_sources WHERE game_hash = ?1 AND source = ?2",
+        rusqlite::params![game_id, source],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
+/// 记住"这个游戏在这个源里是哪一条"。
+pub fn remember_source_id(
+    conn: &Connection,
+    game_id: &str,
+    source: &str,
+    source_id: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO game_sources (game_hash, source, source_id, payload, fetched_at)
+         VALUES (?1, ?2, ?3, '{}', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ON CONFLICT(game_hash, source) DO UPDATE SET
+             source_id = excluded.source_id,
+             fetched_at = excluded.fetched_at",
+        rusqlite::params![game_id, source, source_id],
+    )?;
+    Ok(())
+}
+
+/// 写回扫描事实里的体积（`dir_size`）与递归文件数。
+///
+/// 旧库没有体积列，迁移过来的 211 部全是 0；这个函数是"补统计"的落点。
+pub fn set_dir_size(
+    conn: &Connection,
+    game_id: &str,
+    file_count: i64,
+    dir_size: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE games SET file_count = ?2, dir_size = ?3, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE id = ?1",
+        rusqlite::params![game_id, file_count, dir_size],
+    )
+}
+
 /* ------------------------------------------------------------ 应用设置 */
 
 /// 读一条应用设置；不存在返回 `None`，不是错误。

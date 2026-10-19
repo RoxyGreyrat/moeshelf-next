@@ -326,22 +326,31 @@ export function GameDetailPage({
               </div>
 
               <div className={cn(PAGE, "relative flex items-end gap-7 pb-8 pt-10")}>
-                {/* 竖版封面。只做展示：换封面统一走「编辑信息」，避免同一件事两个入口 */}
-                <div className="group relative aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
-                  {poster ? (
+                {/* 封面：**高度固定、宽度按图片实际比例**。
+                    官方包装图多数是竖版 2:3，但也有不少是横版宣传图（16:9 甚至更宽）。
+                    统一按 2:3 裁切会把横图裁掉大半，所以这里让宽度跟着比例走：
+                    所有条目的视觉高度一致，横图也能完整看到。
+                    换封面统一走「编辑信息」，避免同一件事两个入口 */}
+                {poster ? (
+                  <div
+                    data-cover-hero="true"
+                    className="group relative h-[264px] w-fit shrink-0 overflow-hidden rounded-xl bg-muted shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10"
+                  >
                     <img
                       src={poster}
                       alt={game.titleCn || game.title}
-                      className="h-full w-full object-cover"
+                      className="h-full w-auto max-w-[52vw] object-contain"
                     />
-                  ) : (
+                  </div>
+                ) : (
+                  <div className="relative aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
                     <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/25 to-primary/5">
                       <span className="select-none font-serif text-[64px] leading-none text-white/80">
                         {(game.titleCn || game.title).slice(0, 1)}
                       </span>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {/* 标题区 */}
                 <div className="min-w-0 flex-1 pb-1">
