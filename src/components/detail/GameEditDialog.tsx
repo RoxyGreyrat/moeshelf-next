@@ -31,7 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 import { CoverPickerDialog } from "@/components/detail/CoverPickerDialog";
 import { coverSrc } from "@/lib/cover";
@@ -54,7 +53,6 @@ interface Draft {
   platform: Platform;
   rating: string;
   tags: string;
-  cnDescription: string;
 }
 
 function toDraft(g: Game): Draft {
@@ -68,7 +66,6 @@ function toDraft(g: Game): Draft {
     platform: g.platform,
     rating: String(g.rating || ""),
     tags: g.tags.join("、"),
-    cnDescription: g.cnDescription ?? "",
   };
 }
 
@@ -185,10 +182,6 @@ export function GameEditDialog({
     if (draft.platform !== game.platform) patch.platform = draft.platform;
     if (rating !== game.rating) patch.rating = rating;
     if (tags.join("|") !== game.tags.join("|")) patch.tags = tags;
-    if (draft.cnDescription !== (game.cnDescription ?? ""))
-      patch.cnDescription = draft.cnDescription;
-    else if (draft.cnDescription !== "" && !game.cnDescription)
-      patch.description = draft.cnDescription;
 
     if (Object.keys(patch).length === 0) {
       toast("没有检测到改动");
@@ -391,16 +384,6 @@ export function GameEditDialog({
                     value={draft.tags}
                     onChange={(e) => set("tags", e.target.value)}
                     className="mt-1 h-8 text-[12.5px]"
-                  />
-                </div>
-
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">中文简介</Label>
-                  <Textarea
-                    value={draft.cnDescription}
-                    onChange={(e) => set("cnDescription", e.target.value)}
-                    rows={4}
-                    className="mt-1 min-h-[88px] text-[12px] leading-relaxed"
                   />
                 </div>
               </div>

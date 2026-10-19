@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   FolderOpen,
-  ImageIcon,
   Pencil,
   Play,
   CloudDownload,
@@ -12,7 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { getGameDetail, setCoverFromFile } from "@/lib/api";
+import { getGameDetail } from "@/lib/api";
 import type { GameDetail, ScrapeReport } from "@/lib/api";
 import type { Character, Game } from "@/types/game";
 import { engineLabel, PLATFORM_LABEL } from "@/types/game";
@@ -22,7 +21,7 @@ import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { GameEditDialog } from "@/components/detail/GameEditDialog";
 import { FetchInfoDialog } from "@/components/detail/FetchInfoDialog";
-import { PathPickerDialog } from "@/components/common/PathPickerDialog";
+import { DescriptionEditDialog } from "@/components/detail/DescriptionEditDialog";
 
 interface GameDetailPageProps {
   /** 要展示的游戏 id（就是 path_hash） */
@@ -163,28 +162,14 @@ export function GameDetailPage({
   const [descOpen, setDescOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /** 编辑 / 获取资料 / 换封面 —— 都在这个页面里完成，不再跳回侧边栏 */
+  /** 编辑 / 获取资料 / 改简介 —— 都在这个页面里完成，不再跳回侧边栏。
+   *  封面不在这里换：封面属于"编辑信息"里的动作，详情页只负责展示。 */
   const [editOpen, setEditOpen] = useState(false);
   const [scrapeOpen, setScrapeOpen] = useState(false);
-  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
-  const [coverBusy, setCoverBusy] = useState(false);
-  /** 变了就重新拉一次详情（保存 / 获取资料 / 换封面之后） */
+  const [descEditOpen, setDescEditOpen] = useState(false);
+  /** 变了就重新拉一次详情（保存 / 获取资料之后） */
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((k) => k + 1);
-
-  const pickCover = async (path: string) => {
-    setCoverBusy(true);
-    try {
-      await setCoverFromFile(gameId, path);
-      refresh();
-      toast.success("封面已更新");
-    } catch (err) {
-      console.error("[set_cover_from_file]", err);
-      toast.error("换封面失败", { description: String(err) });
-    } finally {
-      setCoverBusy(false);
-    }
-  };
 
   useEffect(() => {
     let alive = true;
@@ -328,7 +313,7 @@ export function GameDetailPage({
               </div>
 
               <div className={cn(PAGE, "relative flex items-end gap-7 pb-8 pt-10")}>
-                {/* 竖版封面 */}
+                {/* 竖版封面。只做展示：换封面统一走「编辑信息」，避免同一件事两个入口 */}
                 <div className="group relative aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
                   {poster ? (
                     <img
@@ -341,22 +326,6 @@ export function GameDetailPage({
                       <span className="select-none font-serif text-[64px] leading-none text-white/80">
                         {(game.titleCn || game.title).slice(0, 1)}
                       </span>
-                    </div>
-                  )}
-
-                  {/* 悬停显示换封面：封面属于"一眼就能判断好坏"的东西，值得一个就地入口 */}
-                  <button
-                    type="button"
-                    onClick={() => setCoverPickerOpen(true)}
-                    className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/70 to-transparent px-2 pb-2 pt-6 text-[10.5px] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100"
-                  >
-                    <ImageIcon className="size-3" />
-                    更换封面
-                  </button>
-
-                  {coverBusy && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/35">
-                      <span className="text-[10.5px] text-white">处理中…</span>
                     </div>
                   )}
                 </div>
@@ -453,7 +422,20 @@ export function GameDetailPage({
                 {/* 左：简介 + 角色 */}
                 <div className="min-w-0">
                   <section>
-                    <SectionHeading>简介</SectionHeading>
+                    <SectionHeading
+                      right={
+                        <button
+                          type="button"
+                          onClick={() => setDescEditOpen(true)}
+                          className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <Pencil className="size-3" />
+                          编辑
+                        </button>
+                      }
+                    >
+                      简介
+                    </SectionHeading>
                     <p
                       className={cn(
                         "selectable whitespace-pre-line text-[12.5px] leading-[1.9] text-muted-foreground",
@@ -575,12 +557,11 @@ export function GameDetailPage({
               }
             }}
           />
-          <PathPickerDialog
-            open={coverPickerOpen}
-            mode="image"
-            title="选择封面图片"
-            onOpenChange={setCoverPickerOpen}
-            onPick={(path) => void pickCover(path)}
+          <DescriptionEditDialog
+            open={descEditOpen}
+            game={game}
+            onOpenChange={setDescEditOpen}
+            onSaved={() => refresh()}
           />
         </>
       )}

@@ -82,6 +82,19 @@ export default function App() {
 
   const searchRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * 书架列表的滚动容器，以及"离开前滚到哪了"。
+   *
+   * 详情页和设置页都是整页替换（不是弹窗），列表会被真正卸载，
+   * 浏览器的 scrollTop 自然丢失 —— 不记这一下，从第 5 屏点进详情再回来就回到顶部。
+   */
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const listScrollTop = useRef(0);
+
+  const rememberListScroll = useCallback(() => {
+    listScrollTop.current = listScrollRef.current?.scrollTop ?? 0;
+  }, []);
+
   /* ------------------------------------------------------------ 数据装载（Rust） */
 
   /** 从 SQLite 读全量列表。成功后清掉选中，避免指向已不存在的 id */
@@ -220,12 +233,30 @@ export default function App() {
   );
 
   const handleOpen = useCallback((id: string) => {
+    // 进详情前记住列表滚到哪了 —— 详情页是整页替换，列表会被卸载
+    rememberListScroll();
     setCursorId(id);
     setSelectedIds([id]);
     setEditing(false);
     // 双击 / Enter = 打开全屏详情；单击仍然只选中、右侧面板跟着换
     setDetailId(id);
-  }, []);
+  }, [rememberListScroll]);
+
+  /** 从详情 / 设置回到书架：列表是重新挂载的，把离开前的滚动位置补回去 */
+  useEffect(() => {
+    if (detailId || settingsOpen) return;
+
+    const el = listScrollRef.current;
+    const target = listScrollTop.current;
+    if (!el || target <= 0) return;
+
+    el.scrollTop = target;
+    // 卡片有 45ms 错峰的入场动画，首帧高度未必已经到位，下一帧再补一次最稳
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = target;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailId, settingsOpen]);
 
   /**
    * 扫描：选目录 → 订阅进度 → Rust 扫完写库 → 重拉列表 → 报数字。
@@ -555,7 +586,10 @@ export default function App() {
           onScan={handleScan}
           scanning={scanning}
           roots={roots}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            rememberListScroll();
+            setSettingsOpen(true);
+          }}
           searchRef={searchRef}
         />
 
@@ -612,7 +646,7 @@ export default function App() {
             {/* pt-6 是必须的：卡片悬停会上浮 4px + 放大 1.04（顶部再外扩约 4.5px），
                 选中外框还额外向外 3px。滚动容器没有顶部内边距时，这 8~9px 会被直接切平。
                 需要 ≥10px 的呼吸空间，这里给 24px。 */}
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-44 pt-6">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-44 pt-6" ref={listScrollRef}>
               <GameGrid
                 games={filtered}
                 view={view}
