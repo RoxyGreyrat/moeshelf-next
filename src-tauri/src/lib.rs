@@ -76,6 +76,8 @@ pub fn run() {
             commands::get_scrape_settings,
             commands::set_scrape_settings,
             commands::auto_match_games,
+            commands::enrich_game,
+            commands::measure_sizes,
             commands::cover_candidates,
             commands::get_network_settings,
             commands::set_network_settings,

@@ -25,6 +25,24 @@ pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<Game>> {
     Ok(games)
 }
 
+/// 列出全部游戏（**包含被忽略的**）。
+///
+/// 统计体积这类"对硬盘做事实核查"的操作不能漏掉被忽略的条目 ——
+/// 它们在库里、也在硬盘上，只是不在书架上显示。
+pub fn list_all_any(conn: &Connection) -> rusqlite::Result<Vec<Game>> {
+    let sql = format!(
+        "SELECT {GAME_COLUMNS} FROM games ORDER BY first_seen_at DESC, title_cn ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], Game::from_row)?;
+
+    let mut games = Vec::new();
+    for row in rows {
+        games.push(row?);
+    }
+    Ok(games)
+}
+
 /// 按 id 取单条。
 pub fn get_one(conn: &Connection, id: &str) -> rusqlite::Result<Option<Game>> {
     let sql = format!("SELECT {GAME_COLUMNS} FROM games WHERE id = ?1");

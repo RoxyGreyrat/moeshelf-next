@@ -177,6 +177,133 @@ pub fn detail(gid: &str) -> Result<(Candidate, Vec<crate::models::Character>), S
     Ok((candidate, Vec::new()))
 }
 
+/* ------------------------------------------------------------ 角色与声优 */
+
+use std::collections::HashMap;
+
+use crate::models::Character;
+
+/// 声优（person）名字的缓存：同一部作品里几个角色共用一个声优很常见，
+/// 补第二部作品时也不需要重新查。
+static PERSON_CACHE: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+
+fn person_name(pid: u64) -> String {
+    if let Ok(guard) = PERSON_CACHE.lock() {
+        if let Some(map) = guard.as_ref() {
+            if let Some(name) = map.get(&pid) {
+                return name.clone();
+            }
+        }
+    }
+
+    let name = (|| -> Result<String, String> {
+        let v = super::get_json(&format!("{BASE}/open/archive?pid={pid}"), &auth_headers()?)?;
+        // 返回结构是 { data: { person: {...} } }；顶层字段是兼容旧版格式的兜底
+        let person = v
+            .get("data")
+            .and_then(|d| d.get("person"))
+            .or_else(|| v.get("person"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        Ok(s(&person, "name"))
+    })()
+    .unwrap_or_default();
+
+    if let Ok(mut guard) = PERSON_CACHE.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(pid, name.clone());
+    }
+    name
+}
+
+/// 从游戏档案里取角色与声优。
+///
+/// 月幕的 `?gid=` 只返回 `{cid, cvId, characterPosition}`，名字要逐个 `?cid=` 查、
+/// 声优要逐个 `?pid=` 查 —— 一部作品 10~20 个请求。所以这条路只在
+/// 「补全资料」或详情页按需触发，**不放进扫描主链路**。
+///
+/// 角色名用原文名（`name`），中文名与别名塞进 `aliases`：
+/// 这样和 VNDB 抓来的角色列表能按名字对上，声优才补得进去。
+pub fn characters(gid: &str) -> Result<Vec<Character>, String> {
+    let v = super::get_json(&format!("{BASE}/open/archive?gid={gid}"), &auth_headers()?)?;
+    let game = v
+        .get("data")
+        .and_then(|d| d.get("game"))
+        .cloned()
+        .ok_or_else(|| format!("月幕上找不到 {gid}"))?;
+
+    let refs = game
+        .get("characters")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out: Vec<Character> = Vec::new();
+
+    for item in refs {
+        let Some(cid) = item.get("cid").and_then(|c| c.as_u64()) else {
+            continue;
+        };
+        let cv_id = item.get("cvId").and_then(|c| c.as_u64());
+        let position = item
+            .get("characterPosition")
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
+
+        let detail = super::get_json(&format!("{BASE}/open/archive?cid={cid}"), &auth_headers()?)?;
+        // { data: { character: {...} } }；顶层兜底同上
+        let ch = detail
+            .get("data")
+            .and_then(|d| d.get("character"))
+            .or_else(|| detail.get("character"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let name = s(&ch, "name");
+        if name.is_empty() {
+            continue;
+        }
+
+        let mut aliases: Vec<String> = Vec::new();
+        let cn = s(&ch, "chineseName");
+        if !cn.is_empty() && cn != name {
+            aliases.push(cn);
+        }
+        if let Some(ext) = ch.get("extensionName").and_then(|e| e.as_array()) {
+            for e in ext {
+                let alias = s(e, "name");
+                if !alias.is_empty() && alias != name && !aliases.contains(&alias) {
+                    aliases.push(alias);
+                }
+            }
+        }
+
+        let cv = cv_id.map(person_name).unwrap_or_default();
+        let image_url = Some(s(&ch, "mainImg")).filter(|u| !u.is_empty());
+
+        out.push(Character {
+            name,
+            aliases,
+            role: match position {
+                1 => "主角".to_string(),
+                2 => "次要人物".to_string(),
+                _ => String::new(),
+            },
+            cv_source: if cv.is_empty() {
+                String::new()
+            } else {
+                "ymgal".to_string()
+            },
+            cv,
+            image_url,
+            sort_order: out.len() as i64,
+        });
+
+        // 月幕文档明确要求不要连打；120ms 足够不触发限流，一部作品也就多等两秒
+        std::thread::sleep(Duration::from_millis(120));
+    }
+
+    Ok(out)
+}
+
 /// 最小可用的 URL 编码（只处理非 ASCII 与常见保留字符）
 fn urlencode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
@@ -192,8 +319,7 @@ fn urlencode(input: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests {    use super::*;
 
     #[test]
     fn encodes_non_ascii() {
@@ -217,5 +343,20 @@ mod tests {
         assert_eq!(c.title_cn, "千恋万花");
         assert_eq!(c.developer, "ゆずソフト");
         assert_eq!(c.rating, 0.0);
+    }
+
+    /// 真机联网的排查用例：`cargo test ymgal_real_characters -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ymgal_real_characters() {
+        match characters("57160") {
+            Ok(list) => {
+                println!("count={}", list.len());
+                for c in list.iter().take(6) {
+                    println!("{} | role={} | cv={} ({})", c.name, c.role, c.cv, c.cv_source);
+                }
+            }
+            Err(e) => println!("ERR {e}"),
+        }
     }
 }

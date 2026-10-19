@@ -27,6 +27,8 @@ import {
   getScrapeSettings,
   listIgnoredGames,
   listScanRoots,
+  measureSizes,
+  onSizeProgress,
   openFolder,
   removeScanRoot,
   setGamesIgnored,
@@ -34,7 +36,7 @@ import {
   setScrapeSettings,
   testNetwork,
 } from "@/lib/api";
-import type { AppInfo, ProbeResult, ScanRoot } from "@/lib/api";
+import type { AppInfo, ProbeResult, ScanRoot, SizeProgress } from "@/lib/api";
 import type { Game } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -236,6 +238,11 @@ export function SettingsPage({
   const [autoMatch, setAutoMatch] = useState(true);
   const [autoMatchBusy, setAutoMatchBusy] = useState(false);
 
+  /** 体积补统计 */
+  const [sizeBusy, setSizeBusy] = useState(false);
+  const [sizeProgress, setSizeProgress] = useState<SizeProgress | null>(null);
+  const [sizeNote, setSizeNote] = useState<string | null>(null);
+
   // 只读一次；设置页是独立的整页，不存在「关掉再开」的缓存问题
   useEffect(() => {
     let alive = true;
@@ -372,8 +379,36 @@ export function SettingsPage({
     }
   };
 
+  /** 体积补统计：只补 0 的，或者全部重算 */
+  const runMeasure = async (onlyMissing: boolean) => {
+    setSizeBusy(true);
+    setSizeProgress(null);
+    setSizeNote(null);
+
+    const unlisten = await onSizeProgress(setSizeProgress);
+    try {
+      const report = await measureSizes(onlyMissing);
+      const summary = `更新 ${report.measured} 部 · 共 ${formatBytes(report.totalBytes)}`;
+      setSizeNote(
+        `统计完成：${summary}（开始前有 ${report.missingBefore} 部没有体积）` +
+          (report.missingDirs > 0
+            ? `；另有 ${report.missingDirs} 部的目录已经不存在（被改名/移动或删除），统计不了。`
+            : ""),
+      );
+      toast.success("体积统计完成", { description: summary });
+    } catch (err) {
+      console.error("[measure_sizes]", err);
+      toast.error("统计失败", { description: String(err) });
+    } finally {
+      unlisten();
+      setSizeBusy(false);
+      setSizeProgress(null);
+    }
+  };
+
   /** 保存代理；空串表示回到"自动" */
-  const saveProxy = async () => {    setProxyBusy(true);
+  const saveProxy = async () => {
+    setProxyBusy(true);
     try {
       const next = await setNetworkSettings(proxy);
       setProxy(next.proxy);
@@ -603,6 +638,48 @@ export function SettingsPage({
             </div>
           </div>
         ) : null}
+      </Section>
+
+      <Section
+        title="游戏体积"
+        hint="旧库没有体积列，211 部迁移过来的全是「未统计」。这里按真实目录递归统计一次，写进数据库。"
+      >
+        <div className="rounded-xl border border-border bg-card px-4 py-3.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              className="h-8 gap-1.5"
+              disabled={sizeBusy}
+              onClick={() => void runMeasure(true)}
+            >
+              {sizeBusy ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <HardDrive className="size-3.5" />
+              )}
+              统计未统计的体积
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5"
+              disabled={sizeBusy}
+              onClick={() => void runMeasure(false)}
+            >
+              全部重新统计
+            </Button>
+            {sizeProgress && (
+              <span className="text-[11.5px] tabular-nums text-muted-foreground">
+                正在统计 {sizeProgress.done}/{sizeProgress.total} ·{" "}
+                <span className="text-foreground/70">{sizeProgress.title}</span>
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            {sizeNote ??
+              "「未统计」只补 dir_size 还是 0 的条目；挪过文件后想刷新数字，点「全部重新统计」。"}
+          </p>
+        </div>
       </Section>
     </div>
   );

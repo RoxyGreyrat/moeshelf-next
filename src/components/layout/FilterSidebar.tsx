@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, Search, X } from "lucide-react";
+import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
 
 import type { Engine, Filters, Platform } from "@/types/game";
 import { engineLabel, PLATFORM_LABEL } from "@/types/game";
@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { loadGroupOpen, saveGroupOpen } from "@/lib/persist";
 
 /**
  * 左侧筛选面板 —— 参照 Wallpaper Engine 的「筛选」：
@@ -40,6 +41,9 @@ interface FilterSidebarProps {
   tagCounts: Record<string, number>;
   allTags: string[];
   activeCount: number;
+  /** 收起成一窄条，给中间的书架腾宽度 */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onTogglePlatform: (p: Platform) => void;
   onToggleDeveloper: (d: string) => void;
   onToggleEngine: (e: Engine) => void;
@@ -47,10 +51,19 @@ interface FilterSidebarProps {
   onClearAll: () => void;
 }
 
+/**
+ * 排序策略：
+ * - 会社、标签按**名称**排（用户明确要求：数量排序会让"我知道我要找哪个会社"变得难找）；
+ * - 引擎数量少、互相之间没有自然顺序，仍按数量从多到少。
+ * 三种都保持"已选中置顶"。
+ */
+type OptionOrder = "count" | "name";
+
 function buildOptions(
   values: Option[],
   selected: string[],
   query: string,
+  order: OptionOrder,
 ): Option[] {
   const q = query.trim().toLowerCase();
   const matched = q
@@ -62,8 +75,15 @@ function buildOptions(
     const sa = selected.includes(a.value) ? 1 : 0;
     const sb = selected.includes(b.value) ? 1 : 0;
     if (sa !== sb) return sb - sa;
+
+    const byName = a.label.localeCompare(b.label, "zh-Hans-CN", {
+      numeric: true,
+      sensitivity: "base",
+    });
+
+    if (order === "name") return byName;
     if (a.count !== b.count) return b.count - a.count;
-    return a.label.localeCompare(b.label, "zh-Hans-CN", { numeric: true });
+    return byName;
   });
 }
 
@@ -83,8 +103,16 @@ function FilterGroup({
   searching: boolean;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  // 分组的展开/收起也记住：下次打开还是上次的样子
+  const [open, setOpen] = useState(() => loadGroupOpen()[title] ?? defaultOpen);
   const [expanded, setExpanded] = useState(false);
+
+  const toggleOpen = () => {
+    setOpen((v) => {
+      saveGroupOpen(title, !v);
+      return !v;
+    });
+  };
 
   if (options.length === 0) return null;
 
@@ -100,7 +128,7 @@ function FilterGroup({
     <section className="border-b border-border/70 pb-2 last:border-b-0">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         aria-expanded={isOpen}
         className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-2 text-left transition-colors hover:bg-muted/60"
       >
@@ -194,6 +222,8 @@ export function FilterSidebar({
   tagCounts,
   allTags,
   activeCount,
+  collapsed,
+  onToggleCollapsed,
   onTogglePlatform,
   onToggleDeveloper,
   onToggleEngine,
@@ -224,7 +254,8 @@ export function FilterSidebar({
         label: value || "未登记",
         count,
       }));
-    return buildOptions(values, filters.developers, search);
+    // 会社按名称排：找"我知道的那家公司"时，数量排序帮不上忙
+    return buildOptions(values, filters.developers, search, "name");
   }, [developerCounts, filters.developers, search]);
 
   const engineOptions = useMemo<Option[]>(() => {
@@ -233,27 +264,51 @@ export function FilterSidebar({
       label: engineLabel(e),
       count: engineCounts[e] ?? 0,
     }));
-    return buildOptions(values, filters.engines, search);
+    return buildOptions(values, filters.engines, search, "count");
   }, [engineCounts, filters.engines, search]);
 
   const tagOptions = useMemo<Option[]>(() => {
     const values = allTags
       .filter((t) => (tagCounts[t] ?? 0) > 0)
       .map((t) => ({ value: t, label: t, count: tagCounts[t] ?? 0 }));
-    return buildOptions(values, filters.tags, search);
+    // 标签也不再按数量排（数量多的标签常年占满前几行，反而找不到想要的）
+    return buildOptions(values, filters.tags, search, "name");
   }, [allTags, filters.tags, search, tagCounts]);
 
-  const visiblePlatforms = buildOptions(platformOptions, filters.platforms, search);
+  const visiblePlatforms = buildOptions(platformOptions, filters.platforms, search, "name");
   const totalShown =
     visiblePlatforms.length +
     developerOptions.length +
     engineOptions.length +
     tagOptions.length;
 
-  return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-background">
-      <div className="flex items-center justify-between px-4 pb-2 pt-4">
-        <span className="text-[13px] font-semibold tracking-tight">筛选</span>
+  /* ---------------------------------------------------------------- 收起态 */
+  // 收成 44px 的窄条：中间的书架能多出 200px，窗口小的时候很有用。
+  // 展开按钮做成竖排文字，比一个光秃秃的图标好认。
+  if (collapsed) {
+    return (
+      <aside className="flex w-11 shrink-0 flex-col items-center gap-3 border-r border-border bg-background py-3">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="展开筛选栏"
+          onClick={onToggleCollapsed}
+          className="size-8 text-muted-foreground hover:text-foreground"
+        >
+          <PanelLeftOpen className="size-4" />
+        </Button>
+
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label="展开筛选栏"
+          className="flex flex-1 items-start justify-center rounded-md py-2 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          <span className="text-[12px] font-medium tracking-[0.35em] [writing-mode:vertical-rl]">
+            筛选
+          </span>
+        </button>
+
         {activeCount > 0 && (
           <Badge
             variant="secondary"
@@ -262,6 +317,34 @@ export function FilterSidebar({
             {activeCount}
           </Badge>
         )}
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-background">
+      <div className="flex items-center justify-between px-4 pb-2 pt-4">
+        <span className="text-[13px] font-semibold tracking-tight">筛选</span>
+        <div className="flex items-center gap-1">
+          {activeCount > 0 && (
+            <Badge
+              variant="secondary"
+              className="h-5 rounded-full px-1.5 text-[10px] tabular-nums"
+            >
+              {activeCount}
+            </Badge>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="收起筛选栏"
+            title="收起筛选栏"
+            onClick={onToggleCollapsed}
+            className="size-6 text-muted-foreground hover:text-foreground"
+          >
+            <PanelLeftClose className="size-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div className="px-3 pb-2">

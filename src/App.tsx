@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import type { AutoMatchProgress, ScanProgress, ScanRoot } from "@/lib/api";
 import { sortGames } from "@/lib/sort";
+import { loadUi, sanitizeUi, saveUi, loadSidebarCollapsed, saveSidebarCollapsed } from "@/lib/persist";
 import type {
   Filters,
   Game,
@@ -49,8 +50,7 @@ const EMPTY_FILTERS: Filters = {
   tags: [],
 };
 
-/** 默认按发售日倒序 —— 新作在前，和"书架"的直觉一致 */
-const DEFAULT_SORT: SortState = { key: "released", dir: "desc" };
+/** 默认按发售日倒序 —— 新作在前，和"书架"的直觉一致（`persist.sanitizeUi` 里的兜底同此） */
 
 function toggleIn<T>(list: T[], value: T): T[] {
   return list.includes(value)
@@ -59,19 +59,23 @@ function toggleIn<T>(list: T[], value: T): T[] {
 }
 
 export default function App() {
+  // 上次关掉时的界面状态（视图 / 排序 / 筛选 / 搜索词 / 选中项）。
+  // 只读一次：之后的变化由下面的 saveUi 写回去。
+  const [initial] = useState(() => sanitizeUi(loadUi()));
+
   // 数据来自 Rust 命令层：启动时 list_games，失败则停在错误态
   const [games, setGames] = useState<Game[]>([]);
-  const [query, setQuery] = useState("");
-  const [view, setView] = useState<ViewMode>("grid");
+  const [query, setQuery] = useState(initial.query);
+  const [view, setView] = useState<ViewMode>(initial.view);
   const [gridState, setGridState] = useState<GridState>("loading");
-  const [selectMode, setSelectMode] = useState<SelectMode>("single");
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const [selectMode, setSelectMode] = useState<SelectMode>(initial.selectMode);
+  const [filters, setFilters] = useState<Filters>(initial.filters);
+  const [sort, setSort] = useState<SortState>(initial.sort);
 
   // 选中的游戏（多选时是集合，单选时只有一个）
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>(initial.selectedIds);
   // 键盘光标：方向键移动的是它，单选时与选中同步
-  const [cursorId, setCursorId] = useState<string | null>(null);
+  const [cursorId, setCursorId] = useState<string | null>(initial.cursorId);
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,6 +90,8 @@ export default function App() {
 
   // 设置面板 / 全屏详情 / 删除确认（删除是个不可撤销的动作，必须二次确认）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 左侧筛选栏收起（记在本地，下次打开还是收起的） */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   /** 自制目录选择器（扫一个新目录时用） */
   const [scanPickerOpen, setScanPickerOpen] = useState(false);
   /** 全屏详情页打开的是哪一部；null = 没开 */
@@ -117,13 +123,23 @@ export default function App() {
 
   /* ------------------------------------------------------------ 数据装载（Rust） */
 
-  /** 从 SQLite 读全量列表。成功后清掉选中，避免指向已不存在的 id */
+  /**
+   * 从 SQLite 读全量列表。
+   *
+   * 选中项**不整批清空**，只剔掉"已经不在库里"的 id：
+   * 启动时要靠它保住上次的选中（清空 = 重启后详情面板永远关着），
+   * 扫描/删除之后也要靠它把失效的 id 收掉。
+   */
   const reload = useCallback(async () => {
     try {
       const rows = await listGames();
+      const alive = new Set(rows.map((g) => g.id));
       setGames(rows);
-      setSelectedIds([]);
-      setCursorId(null);
+      setSelectedIds((prev) => {
+        const kept = prev.filter((id) => alive.has(id));
+        return kept.length === prev.length ? prev : kept;
+      });
+      setCursorId((prev) => (prev && alive.has(prev) ? prev : null));
       setGridState("normal");
       return rows;
     } catch (err) {
@@ -150,6 +166,43 @@ export default function App() {
     void reload();
     void loadRoots();
   }, [loadRoots, reload]);
+
+  /* ------------------------------------------------------------ 界面状态记忆 */
+
+  /**
+   * 首次拿到列表后恢复上次的选中项。
+   *
+   * 必须等 `games` 到了才能恢复：`reload()` 会清空选中（防止指向已删除的 id），
+   * 所以恢复动作只能放在读库完成之后，且只做一次。
+   */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || games.length === 0) return;
+    restoredRef.current = true;
+    if (initial.selectedIds.length === 0) return;
+
+    const ids = initial.selectedIds.filter((id) => games.some((g) => g.id === id));
+    if (ids.length === 0) return;
+
+    setSelectedIds(ids);
+    const cursor =
+      initial.cursorId && games.some((g) => g.id === initial.cursorId)
+        ? initial.cursorId
+        : ids[ids.length - 1];
+    setCursorId(cursor);
+  }, [games, initial]);
+
+  /** 任何一项变了就写回去（防抖 250ms，避免拖筛选时狂写 localStorage） */
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      saveUi({ view, sort, filters, query, selectMode, selectedIds, cursorId });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [view, sort, filters, query, selectMode, selectedIds, cursorId]);
+
+  useEffect(() => {
+    saveSidebarCollapsed(sidebarCollapsed);
+  }, [sidebarCollapsed]);
 
   /* ---------------------------------------------------------------- 派生数据 */
 
@@ -196,6 +249,10 @@ export default function App() {
    * 这里把选中/光标收敛到"仍然可见"的那些，两边永远一致。
    */
   useEffect(() => {
+    // 还没读到库的时候 filtered 是空的：这时"清理不可见选中"会把上次记住的选中全清掉，
+    // 恢复选中就永远失效了。等数据到了再收敛。
+    if (games.length === 0) return;
+
     const visible = new Set(filtered.map((g) => g.id));
     const kept = selectedIds.filter((id) => visible.has(id));
 
@@ -729,6 +786,8 @@ export default function App() {
             tagCounts={tagCounts}
             allTags={allTags}
             activeCount={activeCount}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
             onTogglePlatform={(p) =>
               setFilters((f) => ({ ...f, platforms: toggleIn(f.platforms, p) }))
             }

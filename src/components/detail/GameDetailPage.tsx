@@ -3,16 +3,18 @@ import {
   AlertTriangle,
   ArrowLeft,
   FolderOpen,
+  Loader2,
   Pencil,
   Play,
   CloudDownload,
   Puzzle,
+  Sparkles,
   Star,
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { getGameDetail } from "@/lib/api";
+import { enrichGame, getGameDetail } from "@/lib/api";
 import type { GameDetail, ScrapeReport } from "@/lib/api";
 import type { Character, Game } from "@/types/game";
 import { engineLabel, PLATFORM_LABEL } from "@/types/game";
@@ -170,6 +172,8 @@ export function GameDetailPage({
   const [scrapeOpen, setScrapeOpen] = useState(false);
   const [descEditOpen, setDescEditOpen] = useState(false);
   const [patchOpen, setPatchOpen] = useState(false);
+  /** 补全中文简介 / 声优的请求正在飞 */
+  const [enriching, setEnriching] = useState(false);
   /** 变了就重新拉一次详情（保存 / 获取资料之后） */
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((k) => k + 1);
@@ -212,6 +216,47 @@ export function GameDetailPage({
   const poster = coverSrc(game?.coverUrl);
   const description = game?.cnDescription?.trim() || game?.description || "";
 
+  /**
+   * 补全：中文简介 + 角色声优。
+   *
+   * VNDB 有角色但没有声优、简介是英文；这两样要从月幕 / Bangumi 按标题精确匹配后补。
+   * 找不到就保持原样，报告里会说明（宁缺毋滥，写错角色比没有更糟）。
+   */
+  const runEnrich = async () => {
+    if (!game) return;
+    setEnriching(true);
+    try {
+      const report = await enrichGame(game.id);
+
+      const parts: string[] = [];
+      if (report.descriptionSource) {
+        parts.push(
+          `中文简介（${report.descriptionSource === "ymgal" ? "月幕" : "Bangumi"}）`,
+        );
+      }
+      if (report.cvFilled > 0) parts.push(`${report.cvFilled} 位角色的声优`);
+
+      if (parts.length === 0) {
+        toast("没有需要补的资料", {
+          description: report.notes[0] ?? "中文简介和声优都已经是全的。",
+        });
+      } else {
+        toast.success(`已补全 ${parts.join(" · ")}`, {
+          description:
+            report.notes.length > 0 ? report.notes[0] : undefined,
+        });
+      }
+
+      if (report.notes.length > 0) console.info("[enrich]", report.notes);
+      refresh();
+    } catch (err) {
+      console.error("[enrich_game]", err);
+      toast.error("补全失败", { description: String(err) });
+    } finally {
+      setEnriching(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       {/* 顶栏：返回 + 当前标题 + 主操作 */}
@@ -238,6 +283,21 @@ export function GameDetailPage({
         >
           <CloudDownload className="size-3.5" />
           获取资料
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void runEnrich()}
+          disabled={!game || enriching}
+          className="h-8 gap-1.5"
+          title="从月幕 / Bangumi 补中文简介和角色声优"
+        >
+          {enriching ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="size-3.5" />
+          )}
+          {enriching ? "补全中…" : "补全资料"}
         </Button>
         <Button
           variant="outline"

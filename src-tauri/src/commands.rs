@@ -948,6 +948,10 @@ fn match_one_game(app: &AppHandle, game: &Game) -> Result<MatchOutcome, String> 
                 detail.alt_title.clone()
             };
 
+            // 顺手补中文简介与声优：VNDB 只有英文简介、没有声优，
+            // 这一步失败不影响"已匹配"这个结果，所以忽略错误。
+            let _ = run_enrich(app, &game.id, true);
+
             return Ok(MatchOutcome::Hit(Box::new(AutoMatchHit {
                 game_id: game.id.clone(),
                 title: display_title(game),
@@ -979,6 +983,330 @@ fn match_one_game(app: &AppHandle, game: &Game) -> Result<MatchOutcome, String> 
         },
         closest,
     })))
+}
+
+/* ------------------------------------------------------ 补全：中文简介 / 声优 */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrichReport {
+    pub game: Game,
+    /// 中文简介来自哪个源（None = 没补到）
+    pub description_source: Option<String>,
+    /// 这次补上声优的角色数
+    pub cv_filled: usize,
+    pub characters: usize,
+    pub notes: Vec<String>,
+}
+
+/// 补全一部游戏的中文简介与角色声优。
+///
+/// 这是"旧项目的相关功能"：VNDB 有角色但没有声优、简介是英文；
+/// 中文简介和声优要从月幕 / Bangumi 补。两个源都按标题精确匹配，
+/// 找不到就不动 —— 宁肯留着空，也不要写错角色。
+#[tauri::command]
+pub async fn enrich_game(app: AppHandle, id: String) -> Result<EnrichReport, String> {
+    tauri::async_runtime::spawn_blocking(move || run_enrich(&app, &id, true))
+        .await
+        .map_err(|e| format!("补全线程异常：{e}"))?
+}
+
+/// 角色名归一化：只留字母/数字/假名/汉字，小写。
+/// VNDB 的 "桜小路 ルナ" 和月幕的 "桜小路ルナ" 要能对上。
+fn norm_character_name(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn merge_characters(
+    existing: Vec<crate::models::Character>,
+    incoming: Vec<crate::models::Character>,
+    filled: &mut usize,
+) -> Vec<crate::models::Character> {
+    if existing.is_empty() {
+        *filled = incoming.iter().filter(|c| !c.cv.trim().is_empty()).count();
+        return incoming;
+    }
+
+    let mut by_name: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, c) in existing.iter().enumerate() {
+        by_name.insert(norm_character_name(&c.name), i);
+        for a in &c.aliases {
+            by_name.insert(norm_character_name(a), i);
+        }
+    }
+
+    let mut out = existing;
+    for inc in incoming {
+        let Some(&i) = by_name.get(&norm_character_name(&inc.name)) else {
+            continue;
+        };
+        let target = &mut out[i];
+        if target.cv.trim().is_empty() && !inc.cv.trim().is_empty() {
+            target.cv = inc.cv;
+            target.cv_source = inc.cv_source;
+            *filled += 1;
+        }
+        if target.image_url.is_none() {
+            target.image_url = inc.image_url;
+        }
+        for a in inc.aliases {
+            if !target.aliases.contains(&a) {
+                target.aliases.push(a);
+            }
+        }
+    }
+    out
+}
+
+/// 找这个游戏在某个源里的条目 id：先看 `game_sources`，没有再按标题精确搜。
+fn resolve_source_id(app: &AppHandle, game: &Game, source: &str) -> Result<Option<String>, String> {
+    {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        if let Some(sid) = repo::get_source_id(&conn, &game.id, source).map_err(db_err)? {
+            if !sid.trim().is_empty() {
+                return Ok(Some(sid));
+            }
+        }
+    }
+
+    let folder = folder_name_of(game);
+    let mut queries: Vec<String> = Vec::new();
+    for q in [&game.original_title, &game.title_cn, &game.title, &folder] {
+        let q = q.trim();
+        if !q.is_empty() && !queries.iter().any(|x| x == q) {
+            queries.push(q.to_string());
+        }
+    }
+
+    for q in queries {
+        let rows = match crate::scrape::search(source, &q, 6) {
+            Ok(rows) => rows,
+            Err(_) => continue, // 这个源连不上就换下一个标题/源
+        };
+        let best = rows
+            .iter()
+            .map(|c| (c, crate::scrape::title_score(&q, c)))
+            .filter(|(_, score)| *score >= 1.0)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        if let Some((candidate, _)) = best {
+            // 记住，下次补全/手动获取都不用再搜
+            if let Ok(db) = Ok::<_, String>(app.state::<Db>()) {
+                if let Ok(conn) = db.0.lock() {
+                    let _ = repo::remember_source_id(&conn, &game.id, source, &candidate.id);
+                }
+            }
+            return Ok(Some(candidate.id.clone()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn run_enrich(app: &AppHandle, id: &str, with_characters: bool) -> Result<EnrichReport, String> {
+    let (game, existing) = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        let game = repo::get_one(&conn, id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("找不到该游戏：{id}"))?;
+        let chars = repo::list_characters(&conn, id).unwrap_or_default();
+        (game, chars)
+    };
+
+    let locked: std::collections::HashSet<String> =
+        game.locked_fields.iter().cloned().collect();
+    let need_desc = game.cn_description.trim().is_empty() && !locked.contains("cnDescription");
+    let need_cv = with_characters
+        && (existing.is_empty() || existing.iter().any(|c| c.cv.trim().is_empty()));
+
+    let mut notes: Vec<String> = Vec::new();
+    let mut description: Option<(String, String)> = None;
+    let mut incoming: Vec<crate::models::Character> = Vec::new();
+
+    if need_desc || need_cv {
+        for source in ["ymgal", "bangumi"] {
+            if (!need_desc || description.is_some()) && (!need_cv || !incoming.is_empty()) {
+                break;
+            }
+
+            let source_id = match resolve_source_id(app, &game, source) {
+                Ok(Some(sid)) => sid,
+                Ok(None) => {
+                    notes.push(format!("{source} 上没有找到同名条目"));
+                    continue;
+                }
+                Err(e) => {
+                    notes.push(format!("{source} 搜索失败：{e}"));
+                    continue;
+                }
+            };
+
+            match crate::scrape::detail(source, &source_id) {
+                Ok((candidate, returned)) => {
+                    if need_desc && description.is_none() {
+                        let cn = candidate.description_cn.trim();
+                        if !cn.is_empty() {
+                            description = Some((source.to_string(), cn.to_string()));
+                        }
+                    }
+
+                    if need_cv && incoming.is_empty() {
+                        if source == "ymgal" {
+                            // 月幕的详情不带角色，要再按 gid 拉一次
+                            match crate::scrape::ymgal::characters(&source_id) {
+                                Ok(list) if !list.is_empty() => incoming = list,
+                                Ok(_) => notes.push("月幕没有收录这部作品的角色".to_string()),
+                                Err(e) => notes.push(format!("月幕角色读取失败：{e}")),
+                            }
+                        } else {
+                            incoming = returned;
+                        }
+                    }
+                }
+                Err(e) => notes.push(format!("{source} 详情读取失败：{e}")),
+            }
+        }
+    }
+
+    let mut patch = GamePatch::default();
+    if let Some((_, text)) = &description {
+        patch.cn_description = Some(text.clone());
+    }
+
+    let (updated, cv_filled, characters) = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+
+        let mut cv_filled = 0usize;
+        let merged = merge_characters(existing.clone(), incoming, &mut cv_filled);
+        let characters = merged.len();
+
+        // 只有"本来没角色"或"确实补到了声优"才整批替换；否则不碰现有列表
+        if characters > 0 && (existing.is_empty() || cv_filled > 0) {
+            repo::replace_characters(&conn, id, &merged)?;
+        }
+
+        let updated = if patch.cn_description.is_some() {
+            repo::update_game(&conn, id, &patch, false)?
+        } else {
+            repo::get_one(&conn, id)
+                .map_err(db_err)?
+                .ok_or_else(|| format!("找不到该游戏：{id}"))?
+        };
+
+        (updated, cv_filled, characters)
+    };
+
+    Ok(EnrichReport {
+        game: updated,
+        description_source: description.map(|(source, _)| source),
+        cv_filled,
+        characters,
+        notes,
+    })
+}
+
+/* ------------------------------------------------------ 统计体积（补旧数据） */
+
+pub const SIZE_PROGRESS_EVENT: &str = "size-progress";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeProgress {
+    pub done: usize,
+    pub total: usize,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeReport {
+    /// 这次真正写了库的条数
+    pub measured: usize,
+    pub total_bytes: u64,
+    /// 开始前有多少条没有体积
+    pub missing_before: usize,
+    /// 目录已经不存在（被改名/移动/删除）的条数，统计不了
+    pub missing_dirs: usize,
+}
+
+/// 统计游戏目录的体积（递归），写回 `dir_size` / `file_count`。
+///
+/// 旧库没有体积列，211 部迁移过来全是 0；这个命令就是"补统计"。
+/// `only_missing = true` 只补 0 的那些；false 则全部重算（挪过文件后刷新）。
+#[tauri::command]
+pub async fn measure_sizes(
+    app: AppHandle,
+    only_missing: bool,
+) -> Result<SizeReport, String> {
+    tauri::async_runtime::spawn_blocking(move || run_measure(&app, only_missing))
+        .await
+        .map_err(|e| format!("统计线程异常：{e}"))?
+}
+
+fn run_measure(app: &AppHandle, only_missing: bool) -> Result<SizeReport, String> {
+    let games = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        repo::list_all_any(&conn).map_err(db_err)?
+    };
+
+    let missing_before = games.iter().filter(|g| g.dir_size <= 0).count();
+    let targets: Vec<&Game> = games
+        .iter()
+        .filter(|g| !only_missing || g.dir_size <= 0)
+        .collect();
+
+    let total = targets.len();
+    let mut measured = 0usize;
+    let mut total_bytes = 0u64;
+    let mut missing_dirs = 0usize;
+    let mut last_emit = Instant::now() - std::time::Duration::from_millis(200);
+
+    for (index, game) in targets.iter().enumerate() {
+        let path = std::path::Path::new(&game.folder_path);
+        if path.is_dir() {
+            let (files, bytes) = scanner::measure_dir(path);
+            if bytes > 0 {
+                let db = app.state::<Db>();
+                if let Ok(conn) = db.0.lock() {
+                    let _ = repo::set_dir_size(&conn, &game.id, files, bytes as i64);
+                }
+                measured += 1;
+                total_bytes += bytes;
+            }
+        } else {
+            // 文件夹被改名/移动/删除了：统计不了，如实报数，别把它算成 0 字节
+            missing_dirs += 1;
+        }
+
+        if last_emit.elapsed() >= std::time::Duration::from_millis(150)
+            || index + 1 == total
+        {
+            last_emit = Instant::now();
+            let _ = app.emit(
+                SIZE_PROGRESS_EVENT,
+                SizeProgress {
+                    done: index + 1,
+                    total,
+                    title: display_title(game),
+                },
+            );
+        }
+    }
+
+    Ok(SizeReport {
+        measured,
+        total_bytes,
+        missing_before,
+        missing_dirs,
+    })
 }
 
 /* ------------------------------------------------------------ 封面候选 */

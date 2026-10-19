@@ -183,6 +183,59 @@ export function setScrapeSettings(autoMatch: boolean): Promise<ScrapeSettings> {
   return invoke<ScrapeSettings>("set_scrape_settings", { autoMatch });
 }
 
+/* ---------------------------------------------------- 补全：中文简介 / 声优 */
+
+export interface EnrichReport {
+  game: Game;
+  /** 中文简介来自哪个源（null = 没补到） */
+  descriptionSource: string | null;
+  /** 这次补上声优的角色数 */
+  cvFilled: number;
+  characters: number;
+  /** 逐条说明（哪个源没找到、哪个源连不上） */
+  notes: string[];
+}
+
+/**
+ * 补全一部游戏的中文简介与角色声优。
+ *
+ * VNDB 有角色但没有声优、简介是英文；这两样从月幕 / Bangumi 按标题**精确匹配**后补。
+ * 找不到就保持原样 —— 写错角色比没有更糟。
+ */
+export function enrichGame(id: string): Promise<EnrichReport> {
+  return invoke<EnrichReport>("enrich_game", { id });
+}
+
+/* ---------------------------------------------------- 统计体积（旧数据补全） */
+
+export interface SizeProgress {
+  done: number;
+  total: number;
+  title: string;
+}
+
+export interface SizeReport {
+  measured: number;
+  totalBytes: number;
+  /** 开始前有多少条没有体积 */
+  missingBefore: number;
+  /** 目录已不存在（改名/移动/删除）的条数 */
+  missingDirs: number;
+}
+
+/**
+ * 递归统计游戏目录体积，写回 `dirSize` / `fileCount`。
+ *
+ * `onlyMissing = true` 只补体积为 0 的条目；`false` 全部重算（挪过文件后刷新）。
+ */
+export function measureSizes(onlyMissing: boolean): Promise<SizeReport> {
+  return invoke<SizeReport>("measure_sizes", { onlyMissing });
+}
+
+export function onSizeProgress(handler: (p: SizeProgress) => void): Promise<UnlistenFn> {
+  return listen<SizeProgress>("size-progress", (event) => handler(event.payload));
+}
+
 /* ---------------------------------------------------- C 阶段：忽略 / 删除 */
 
 /**
