@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { flushSync } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 
 import {
@@ -108,17 +109,12 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
 
   /**
-   * 书架列表的滚动容器，以及"离开前滚到哪了"。
+   * 书架列表的滚动容器。
    *
-   * 详情页和设置页都是整页替换（不是弹窗），列表会被真正卸载，
-   * 浏览器的 scrollTop 自然丢失 —— 不记这一下，从第 5 屏点进详情再回来就回到顶部。
+   * 详情页和设置页现在是**覆盖层**，列表不会被卸载，所以滚动位置天然保留，
+   * 不再需要"离开前记住 scrollTop、回来再补"那套（那反而会把位置重置）。
    */
   const listScrollRef = useRef<HTMLDivElement>(null);
-  const listScrollTop = useRef(0);
-
-  const rememberListScroll = useCallback(() => {
-    listScrollTop.current = listScrollRef.current?.scrollTop ?? 0;
-  }, []);
 
   /* ------------------------------------------------------------ 数据装载（Rust） */
 
@@ -311,30 +307,15 @@ export default function App() {
   );
 
   const handleOpen = useCallback((id: string) => {
-    // 进详情前记住列表滚到哪了 —— 详情页是整页替换，列表会被卸载
-    rememberListScroll();
     setCursorId(id);
     setSelectedIds([id]);
     setEditing(false);
     // 双击 / Enter = 打开全屏详情；单击仍然只选中、右侧面板跟着换
     setDetailId(id);
-  }, [rememberListScroll]);
+  }, []);
 
-  /** 从详情 / 设置回到书架：列表是重新挂载的，把离开前的滚动位置补回去 */
-  useEffect(() => {
-    if (detailId || settingsOpen) return;
-
-    const el = listScrollRef.current;
-    const target = listScrollTop.current;
-    if (!el || target <= 0) return;
-
-    el.scrollTop = target;
-    // 卡片有 45ms 错峰的入场动画，首帧高度未必已经到位，下一帧再补一次最稳
-    const raf = requestAnimationFrame(() => {
-      el.scrollTop = target;
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [detailId, settingsOpen]);
+  /** 从详情 / 设置回到书架：列表从来没有被卸载，滚动位置天然还在，不需要补 */
+  // （以前是整页替换，必须在返回时手动恢复 scrollTop；现在详情是覆盖层，反而会把位置重置）
 
   /**
    * 扫描后的自动匹配：给新入库的游戏补资料。
@@ -715,40 +696,9 @@ export default function App() {
 
   /* -------------------------------------------------------------- 渲染 */
 
-  // 设置是整页视图，不是弹窗：直接换掉整个画面，退出后书架状态原样还在
-  if (settingsOpen) {
-    return (
-      <TooltipProvider delayDuration={300}>
-        <SettingsPage
-          gameCount={games.length}
-          onClose={() => setSettingsOpen(false)}
-          onRestored={() => void reload()}
-          onRootsChanged={() => void loadRoots()}
-          onScanRoot={(path) => void handleScan(path)}
-        />
-      </TooltipProvider>
-    );
-  }
-
-  // 全屏详情：双击卡片 / Enter 进入，Esc 或「返回书架」退出。书架状态原样保留。
-  if (detailId) {
-    return (
-      <TooltipProvider delayDuration={300}>
-        <GameDetailPage
-          gameId={detailId}
-          onClose={() => {
-            const id = detailId;
-            setDetailId(null);
-            // 详情页里可能改过数据（获取资料 / 编辑 / 补丁改了启动项）：
-            // 列表里那一行必须跟着更新，否则回来看到的还是旧标题、旧封面。
-            void refreshGameRow(id);
-          }}
-          onOpenFolder={() => void handleOpenFolder()}
-        />
-      </TooltipProvider>
-    );
-  }
-
+  // 设置和详情都是**覆盖层**，不是整页替换：
+  // 书架（含 212 张卡片、滚动位置、筛选状态）始终挂在 DOM 里，
+  // 退回来是"移开一层"，不会重建列表 —— 之前每次返回都白屏一下就是重建导致的。
   return (
     <TooltipProvider delayDuration={300}>
       <div className="relative flex h-full flex-col overflow-hidden bg-background text-foreground">
@@ -763,7 +713,6 @@ export default function App() {
           scanning={scanning}
           roots={roots}
           onOpenSettings={() => {
-            rememberListScroll();
             setSettingsOpen(true);
           }}
           searchRef={searchRef}
@@ -905,6 +854,51 @@ export default function App() {
             toast.error("获取资料失败", { description: "请求超时，请检查网络或代理后重试。" })
           }
         />
+
+        {/* 覆盖层：设置 / 全屏详情。书架不动，退出时只是把这一层移开 */}
+        <AnimatePresence>
+          {settingsOpen && (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              className="fixed inset-0 z-40 overflow-hidden bg-background"
+            >
+              <SettingsPage
+                gameCount={games.length}
+                onClose={() => setSettingsOpen(false)}
+                onRestored={() => void reload()}
+                onRootsChanged={() => void loadRoots()}
+                onScanRoot={(path) => void handleScan(path)}
+              />
+            </motion.div>
+          )}
+
+          {detailId && (
+            <motion.div
+              key="detail"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              className="fixed inset-0 z-40 overflow-hidden bg-background"
+            >
+              <GameDetailPage
+                gameId={detailId}
+                onClose={() => {
+                  const id = detailId;
+                  setDetailId(null);
+                  // 详情页里可能改过数据（获取资料 / 编辑 / 补丁改了启动项）：
+                  // 列表里那一行必须跟着更新，否则回来看到的还是旧标题、旧封面。
+                  void refreshGameRow(id);
+                }}
+                onOpenFolder={() => void handleOpenFolder()}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <Toaster position="top-center" />
       </div>
