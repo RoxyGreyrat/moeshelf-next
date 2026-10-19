@@ -89,34 +89,6 @@ use crate::db::scanner;
 use serde::Serialize;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_dialog::DialogExt;
-
-/// 弹出系统原生的"选择文件夹"对话框，返回用户选中的绝对路径。
-///
-/// 用户取消返回 `Ok(None)` —— 取消不是错误，前端静默忽略即可。
-///
-/// 为什么用回调 API + oneshot，而不用 `blocking_pick_folder()`：
-/// 阻塞版依赖调用线程所在的消息循环，在 async 命令里调它会把运行时线程占死
-/// （Windows 上表现为对话框不出现、窗口白屏）。回调版由主线程自己泵消息，安全。
-#[tauri::command]
-pub async fn pick_folder(app: AppHandle, title: Option<String>) -> Result<Option<String>, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel::<Option<std::path::PathBuf>>();
-
-    app.dialog()
-        .file()
-        .set_title(title.unwrap_or_else(|| "选择游戏库根目录".to_string()))
-        .pick_folder(move |picked| {
-            // 选到的是虚拟位置（拿不到真实路径）时按"取消"处理，避免前端拿到空串去扫描
-            let path = picked.and_then(|p| p.into_path().ok());
-            let _ = tx.send(path);
-        });
-
-    let picked = rx
-        .await
-        .map_err(|_| "文件夹选择对话框被意外关闭".to_string())?;
-
-    Ok(picked.map(|p| p.to_string_lossy().to_string()))
-}
 
 /// 扫描进度事件名。
 ///
@@ -313,4 +285,419 @@ pub fn get_game_detail(db: State<'_, Db>, id: String) -> Result<GameDetail, Stri
         .ok_or_else(|| format!("找不到该游戏：{id}"))?;
     let characters = repo::list_characters(&conn, &id).map_err(db_err)?;
     Ok(GameDetail { game, characters })
+}
+
+/* ------------------------------------------------------------ 自制路径选择器 */
+
+/// 路径选择器里的一行（文件夹或文件）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathListing {
+    /// 当前目录；`null` 表示"还没进任何目录"，此时只列盘符
+    pub path: Option<String>,
+    pub parent: Option<String>,
+    pub entries: Vec<PathEntry>,
+}
+
+/// 列出所有盘符。Windows 没有便宜的 API，直接试 A:~Z: 是否可进入
+fn list_drives() -> Vec<PathEntry> {
+    ('A'..='Z')
+        .filter_map(|c| {
+            let path = format!("{c}:\\");
+            if std::path::Path::new(&path).is_dir() {
+                Some(PathEntry {
+                    name: format!("{c}:"),
+                    path,
+                    is_dir: true,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 列目录。`path` 为 None 时返回盘符列表。
+///
+/// 这是给**自制文件选择器**用的，不弹系统对话框。
+/// 只做一件事：列出一层的文件夹和文件，排序稳定；隐藏项（以 `.` 开头）跳过。
+#[tauri::command]
+pub fn list_path(path: Option<String>) -> Result<PathListing, String> {
+    let Some(raw) = path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    else {
+        return Ok(PathListing {
+            path: None,
+            parent: None,
+            entries: list_drives(),
+        });
+    };
+
+    // 统一分隔符：用户从别处粘过来的路径常是正斜杠，显示出来会很别扭
+    let raw = raw.replace('/', &std::path::MAIN_SEPARATOR.to_string());
+
+    // 允许直接粘一个文件路径：自动跳到它所在目录
+    let mut dir = std::path::PathBuf::from(&raw);
+    if dir.is_file() {
+        if let Some(parent) = dir.parent() {
+            dir = parent.to_path_buf();
+        }
+    }
+    if !dir.is_dir() {
+        return Err(format!("目录不存在：{raw}"));
+    }
+    let dir = dir.as_path();
+
+    let reader = std::fs::read_dir(dir).map_err(|e| format!("读取目录失败：{e}"))?;
+
+    let mut dirs: Vec<PathEntry> = Vec::new();
+    let mut files: Vec<PathEntry> = Vec::new();
+
+    for entry in reader.flatten().take(4000) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else { continue };
+        let path = entry.path().to_string_lossy().to_string();
+
+        if ft.is_dir() {
+            dirs.push(PathEntry {
+                name,
+                path,
+                is_dir: true,
+            });
+        } else if ft.is_file() {
+            files.push(PathEntry {
+                name,
+                path,
+                is_dir: false,
+            });
+        }
+    }
+
+    let key = |e: &PathEntry| e.name.to_lowercase();
+    dirs.sort_by_key(key);
+    files.sort_by_key(key);
+    dirs.extend(files);
+
+    Ok(PathListing {
+        path: Some(dir.to_string_lossy().to_string()),
+        parent: dir
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| !p.is_empty()),
+        entries: dirs,
+    })
+}
+
+/* ------------------------------------------------------------ 封面编辑 */
+
+/// 用本地图片当封面：把字节复制进应用自己的 `data/covers/`，
+/// 文件名 = djb2(源路径)，前端 `coverSrc()` 无需区分来源。
+#[tauri::command]
+pub fn set_cover_from_file(
+    app: AppHandle,
+    db: State<'_, Db>,
+    id: String,
+    source: String,
+) -> Result<Game, String> {
+    let bytes = std::fs::read(&source).map_err(|e| format!("读取图片失败：{e}"))?;
+    if !crate::db::cover_cache::is_image_bytes(&bytes) {
+        return Err("这个文件不是图片（支持 jpg / png / webp / gif / bmp）".to_string());
+    }
+
+    let key = crate::db::scanner::path_hash(&source);
+    crate::db::cover_cache::store(&app, &key, &bytes)?;
+
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::set_cover(&conn, &id, Some(&source), true)
+}
+
+/// 用图片 URL 当封面：先下载到本地缓存，再写库。
+/// 不下载的话断网就变裂图，而且封面 URL 常常带防盗链。
+#[tauri::command]
+pub async fn set_cover_from_url(
+    app: AppHandle,
+    id: String,
+    url: String,
+) -> Result<Game, String> {
+    let trimmed = url.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("图片地址不能为空".to_string());
+    }
+
+    let app2 = app.clone();
+    let url2 = trimmed.clone();
+    let downloaded = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let bytes = crate::scrape::fetch_bytes(&url2)?;
+        if !crate::db::cover_cache::is_image_bytes(&bytes) {
+            return Err("这个地址返回的不是图片".to_string());
+        }
+        let key = crate::db::scanner::path_hash(&url2);
+        crate::db::cover_cache::store(&app2, &key, &bytes)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("下载线程异常：{e}"))?;
+    downloaded?;
+
+    let db = app.state::<Db>();
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::set_cover(&conn, &id, Some(&trimmed), true)
+}
+
+/// 恢复成默认封面（清空 cover_url 并解锁，下次刮削还能重新填）
+#[tauri::command]
+pub fn reset_cover(db: State<'_, Db>, id: String) -> Result<Game, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::set_cover(&conn, &id, None, false)
+}
+
+/* ------------------------------------------------------------ VNDB 刮削 */
+
+#[tauri::command]
+pub async fn vndb_search(
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::scrape::vndb::VnCandidate>, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err("搜索词不能为空".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::scrape::vndb::search(&q, limit.unwrap_or(10)))
+        .await
+        .map_err(|e| format!("搜索线程异常：{e}"))?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrapeReport {
+    pub game: Game,
+    pub updated_fields: Vec<String>,
+    /// 因为被锁定而跳过的字段
+    pub skipped_locked: Vec<String>,
+    pub characters: usize,
+    pub cover_saved: bool,
+}
+
+/// 把 VNDB 上某一条应用到这个游戏。
+///
+/// 三条规矩：
+/// 1. **锁定的字段一律不动**（`locked_fields` 里有的跳过，并在报告里列出来）；
+/// 2. **声优不覆盖**：VNDB 角色接口没有 CV，旧库从 Bangumi 补过一部分，
+///    按角色名把 CV 合并回去，否则一次刮削就把 800 多条声优清空了；
+/// 3. 网络请求与文件下载都在锁外完成，事务里只留数据库写入。
+#[tauri::command]
+pub async fn vndb_apply(app: AppHandle, id: String, vndb_id: String) -> Result<ScrapeReport, String> {
+    // ---------- 1. 网络（不持锁） ----------
+    let vid = vndb_id.clone();
+    let (vn, chars) = tauri::async_runtime::spawn_blocking(move || {
+        let vn = crate::scrape::vndb::fetch_vn(&vid)?;
+        crate::scrape::vndb::polite_pause();
+        let chars = crate::scrape::vndb::fetch_characters(&vid, &std::collections::HashSet::new())
+            .unwrap_or_default();
+        Ok::<_, String>((vn, chars))
+    })
+    .await
+    .map_err(|e| format!("刮削线程异常：{e}"))??;
+
+    let cover_url = vn
+        .get("image")
+        .and_then(|i| i.get("url"))
+        .and_then(|u| u.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // ---------- 2. 下载封面（不持锁） ----------
+    let mut cover_saved = false;
+    if !cover_url.is_empty() {
+        let app2 = app.clone();
+        let url2 = cover_url.clone();
+        let saved = tauri::async_runtime::spawn_blocking(move || -> bool {
+            let Ok(bytes) = crate::scrape::fetch_bytes(&url2) else {
+                return false;
+            };
+            if !crate::db::cover_cache::is_image_bytes(&bytes) {
+                return false;
+            }
+            let key = crate::db::scanner::path_hash(&url2);
+            crate::db::cover_cache::store(&app2, &key, &bytes).is_ok()
+        })
+        .await
+        .unwrap_or(false);
+        cover_saved = saved;
+    }
+
+    // ---------- 3. 写库（持锁） ----------
+    let db = app.state::<Db>();
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+
+    let current = repo::get_one(&conn, &id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("找不到该游戏：{id}"))?;
+    let locked: std::collections::HashSet<String> =
+        current.locked_fields.iter().cloned().collect();
+
+    let mut patch = GamePatch::default();
+    let mut updated: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    macro_rules! put {
+        ($field:ident, $camel:expr, $value:expr) => {{
+            let v: String = $value;
+            if v.trim().is_empty() {
+                // 抓不到就保持原样，别把已有数据冲掉
+            } else if locked.contains($camel) {
+                skipped.push($camel.to_string());
+            } else {
+                patch.$field = Some(v);
+                updated.push($camel.to_string());
+            }
+        }};
+    }
+
+    put!(title, "title", crate::scrape::vndb::value_str(&vn, "title"));
+    put!(
+        original_title,
+        "originalTitle",
+        crate::scrape::vndb::value_str(&vn, "alttitle")
+    );
+    put!(
+        title_cn,
+        "titleCn",
+        crate::scrape::vndb::zh_title(&vn)
+    );
+    put!(
+        developer,
+        "developer",
+        crate::scrape::vndb::first_developer(&vn)
+    );
+    put!(
+        released,
+        "released",
+        crate::scrape::vndb::value_str(&vn, "released")
+    );
+
+    // 评分：VNDB 是 0~100，新库统一 0~10
+    let raw_rating = vn.get("rating").and_then(|r| r.as_f64()).unwrap_or(0.0);
+    if raw_rating > 0.0 {
+        if locked.contains("rating") {
+            skipped.push("rating".to_string());
+        } else {
+            patch.rating = Some((raw_rating / 10.0 * 10.0).round() / 10.0);
+            patch.rating_source = Some("vndb".to_string());
+            updated.push("rating".to_string());
+        }
+    }
+
+    // 简介：只在原来没有的时候补，避免把旧库的中文简介盖成英文
+    if current.description.trim().is_empty() && current.cn_description.trim().is_empty() {
+        let desc = crate::scrape::vndb::value_str(&vn, "description");
+        if !desc.trim().is_empty() && !locked.contains("description") {
+            patch.description = Some(desc);
+            updated.push("description".to_string());
+        }
+    }
+
+    // 标签：只补空，不覆盖（旧库的中文标签比 VNDB 英文 tag 更有用）
+    if current.tags.is_empty() {
+        let tags = crate::scrape::vndb::pick_tags(&vn, 8);
+        if !tags.is_empty() && !locked.contains("tags") {
+            patch.tags = Some(tags);
+            updated.push("tags".to_string());
+        }
+    }
+
+    // 封面
+    if cover_url.is_empty() || !cover_saved {
+    } else if locked.contains("coverUrl") {
+        skipped.push("coverUrl".to_string());
+    } else {
+        patch.cover_url = Some(cover_url);
+        updated.push("coverUrl".to_string());
+    }
+
+    patch.vndb_id = Some(vndb_id.clone());
+    updated.push("vndbId".to_string());
+
+    let game = repo::update_game(&conn, &id, &patch, false)?;
+
+    // 角色：按名字把旧声优合并回去，再整批替换
+    let mut characters = 0usize;
+    if !chars.is_empty() {
+        let existing = repo::list_characters(&conn, &id).unwrap_or_default();
+        let cv_by_name: std::collections::HashMap<String, (String, String)> = existing
+            .iter()
+            .map(|c| (c.name.clone(), (c.cv.clone(), c.cv_source.clone())))
+            .collect();
+
+        let mut merged = chars;
+        for c in merged.iter_mut() {
+            if c.cv.is_empty() {
+                if let Some((cv, src)) = cv_by_name.get(&c.name) {
+                    c.cv = cv.clone();
+                    c.cv_source = src.clone();
+                }
+            }
+        }
+        characters = merged.len();
+        repo::replace_characters(&conn, &id, &merged)?;
+    }
+
+    Ok(ScrapeReport {
+        game,
+        updated_fields: updated,
+        skipped_locked: skipped,
+        characters,
+        cover_saved,
+    })
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn lists_subfolders_before_files() {
+        let dir = std::env::temp_dir().join("moeshelf-path-picker");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("z_sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let listing = list_path(Some(dir.to_string_lossy().to_string())).expect("列目录失败");
+        assert!(listing.path.is_some());
+        assert!(listing.parent.is_some(), "临时目录应该有上级");
+
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names.first(), Some(&"z_sub"), "文件夹排在文件前面");
+        assert!(listing.entries[0].is_dir);
+        assert_eq!(names.last(), Some(&"a.txt"));
+    }
+
+    #[test]
+    fn no_path_lists_drives() {
+        let listing = list_path(None).expect("列盘符失败");
+        assert!(listing.path.is_none());
+        assert!(listing.parent.is_none());
+        // Windows 上至少有一个盘
+        #[cfg(windows)]
+        assert!(!listing.entries.is_empty(), "应该至少列出 C:");
+        assert!(listing.entries.iter().all(|e| e.is_dir));
+    }
+
+    #[test]
+    fn missing_dir_is_an_error() {
+        let ghost = std::path::Path::new("Z://").join("definitely-not-here");
+        assert!(list_path(Some(ghost.to_string_lossy().to_string())).is_err());
+    }
 }

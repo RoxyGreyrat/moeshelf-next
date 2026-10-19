@@ -1169,3 +1169,45 @@ mod character_tests {
         assert_eq!(chars[1].sort_order, 2, "排序保留原始下标");
     }
 }
+
+/* ------------------------------------------------------------ 封面替换 */
+
+/// 设置/清空封面。
+///
+/// 不用 `GamePatch`：补丁语义里 `None` 是"这一列别动"，表达不了"清空"。
+/// `lock=true` 时把 `coverUrl` 并入 `locked_fields`（以后刮削不会覆盖），
+/// `lock=false`（恢复默认）时把它从锁定列表里摘掉。
+pub fn set_cover(
+    conn: &Connection,
+    id: &str,
+    source: Option<&str>,
+    lock: bool,
+) -> Result<Game, String> {
+    let current = get_one(conn, id)
+        .map_err(|e| format!("读取游戏失败：{e}"))?
+        .ok_or_else(|| format!("找不到该游戏：{id}"))?;
+
+    let mut locked = current.locked_fields.clone();
+    if lock {
+        if !locked.iter().any(|f| f == "coverUrl") {
+            locked.push("coverUrl".to_string());
+        }
+    } else {
+        locked.retain(|f| f != "coverUrl");
+    }
+
+    let locked_json = serde_json::to_string(&locked).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "UPDATE games
+            SET cover_url = ?1,
+                locked_fields = ?2,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+          WHERE id = ?3",
+        rusqlite::params![source, locked_json, id],
+    )
+    .map_err(|e| format!("写入封面失败：{e}"))?;
+
+    get_one(conn, id)
+        .map_err(|e| format!("读取游戏失败：{e}"))?
+        .ok_or_else(|| format!("更新后读不回来：{id}"))
+}

@@ -3,28 +3,32 @@ import {
   AlertTriangle,
   ArrowLeft,
   FolderOpen,
+  ImageIcon,
   Pencil,
   Play,
+  Sparkles,
   Star,
   Users,
 } from "lucide-react";
+import { toast } from "sonner";
 
-import { getGameDetail } from "@/lib/api";
-import type { GameDetail } from "@/lib/api";
+import { getGameDetail, setCoverFromFile } from "@/lib/api";
+import type { GameDetail, ScrapeReport } from "@/lib/api";
 import type { Character, Game } from "@/types/game";
 import { engineLabel, PLATFORM_LABEL } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { coverSrc } from "@/lib/cover";
 import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { GameEditDialog } from "@/components/detail/GameEditDialog";
+import { ScrapeDialog } from "@/components/detail/ScrapeDialog";
+import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 
 interface GameDetailPageProps {
   /** 要展示的游戏 id（就是 path_hash） */
   gameId: string;
   onClose: () => void;
   onPlay: () => void;
-  /** 跳回书架并进入编辑态 */
-  onEdit: () => void;
   onOpenFolder: () => void;
 }
 
@@ -151,7 +155,6 @@ export function GameDetailPage({
   gameId,
   onClose,
   onPlay,
-  onEdit,
   onOpenFolder,
 }: GameDetailPageProps) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
@@ -159,6 +162,29 @@ export function GameDetailPage({
   /** 长简介默认折 8 行，否则角色区会被顶到两屏之外 */
   const [descOpen, setDescOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  /** 编辑 / 刮削 / 换封面 —— 都在这个页面里完成，不再跳回侧边栏 */
+  const [editOpen, setEditOpen] = useState(false);
+  const [scrapeOpen, setScrapeOpen] = useState(false);
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+  /** 变了就重新拉一次详情（保存 / 刮削 / 换封面之后） */
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = () => setRefreshKey((k) => k + 1);
+
+  const pickCover = async (path: string) => {
+    setCoverBusy(true);
+    try {
+      await setCoverFromFile(gameId, path);
+      refresh();
+      toast.success("封面已更新");
+    } catch (err) {
+      console.error("[set_cover_from_file]", err);
+      toast.error("换封面失败", { description: String(err) });
+    } finally {
+      setCoverBusy(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -179,7 +205,7 @@ export function GameDetailPage({
     return () => {
       alive = false;
     };
-  }, [gameId]);
+  }, [gameId, refreshKey]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -218,7 +244,17 @@ export function GameDetailPage({
         <Button
           variant="outline"
           size="sm"
-          onClick={onEdit}
+          onClick={() => setScrapeOpen(true)}
+          disabled={!game}
+          className="h-8 gap-1.5"
+        >
+          <Sparkles className="size-3.5" />
+          刮削
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setEditOpen(true)}
           disabled={!game}
           className="h-8 gap-1.5"
         >
@@ -291,7 +327,7 @@ export function GameDetailPage({
 
               <div className={cn(PAGE, "relative flex items-end gap-7 pb-8 pt-10")}>
                 {/* 竖版封面 */}
-                <div className="aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
+                <div className="group relative aspect-[2/3] w-[176px] shrink-0 overflow-hidden rounded-xl shadow-[0_20px_44px_-20px_rgba(24,24,27,0.55)] ring-1 ring-black/10">
                   {poster ? (
                     <img
                       src={poster}
@@ -303,6 +339,22 @@ export function GameDetailPage({
                       <span className="select-none font-serif text-[64px] leading-none text-white/80">
                         {(game.titleCn || game.title).slice(0, 1)}
                       </span>
+                    </div>
+                  )}
+
+                  {/* 悬停显示换封面：封面属于"一眼就能判断好坏"的东西，值得一个就地入口 */}
+                  <button
+                    type="button"
+                    onClick={() => setCoverPickerOpen(true)}
+                    className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/70 to-transparent px-2 pb-2 pt-6 text-[10.5px] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <ImageIcon className="size-3" />
+                    更换封面
+                  </button>
+
+                  {coverBusy && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/35">
+                      <span className="text-[10.5px] text-white">处理中…</span>
                     </div>
                   )}
                 </div>
@@ -498,6 +550,38 @@ export function GameDetailPage({
           </>
         )}
       </div>
+
+      {game && (
+        <>
+          <GameEditDialog
+            open={editOpen}
+            game={game}
+            onOpenChange={setEditOpen}
+            onSaved={() => refresh()}
+          />
+          <ScrapeDialog
+            open={scrapeOpen}
+            game={game}
+            onOpenChange={setScrapeOpen}
+            onApplied={(_game, report: ScrapeReport) => {
+              refresh();
+              // 刮削会改很多字段，用一条系统提示让用户知道"哪些没被改"
+              if (report.skippedLocked.length > 0) {
+                toast("部分字段已锁定，未被覆盖", {
+                  description: report.skippedLocked.join("、"),
+                });
+              }
+            }}
+          />
+          <PathPickerDialog
+            open={coverPickerOpen}
+            mode="image"
+            title="选择封面图片"
+            onOpenChange={setCoverPickerOpen}
+            onPick={(path) => void pickCover(path)}
+          />
+        </>
+      )}
     </div>
   );
 }

@@ -7,7 +7,6 @@ import {
   listScanRoots,
   onScanProgress,
   openFolder,
-  pickFolder,
   scanDirectory,
   setGamesIgnored,
   updateGame,
@@ -29,6 +28,7 @@ import { ScanStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { GameDetailPage } from "@/components/detail/GameDetailPage";
+import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 import { DeleteGamesDialog } from "@/components/detail/DeleteGamesDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
@@ -68,6 +68,8 @@ export default function App() {
 
   // 设置面板 / 全屏详情 / 删除确认（删除是个不可撤销的动作，必须二次确认）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 自制目录选择器（扫一个新目录时用） */
+  const [scanPickerOpen, setScanPickerOpen] = useState(false);
   /** 全屏详情页打开的是哪一部；null = 没开 */
   const [detailId, setDetailId] = useState<string | null>(null);
   /** 已登记的扫描根目录：顶栏扫描按钮的下拉内容 */
@@ -235,17 +237,11 @@ export default function App() {
     async (chosen?: string) => {
       if (scanning) return;
 
-      // 从顶栏下拉里点某个已登记目录 → 直接扫；否则弹选择框
+      // 从顶栏下拉里点某个已登记目录 → 直接扫；否则打开**自制的**目录选择器
       let root: string | null = chosen ?? null;
       if (!root) {
-        try {
-          root = await pickFolder("选择游戏库根目录");
-        } catch (err) {
-          console.error("[pick_folder]", err);
-          toast.error("打不开文件夹选择框", { description: String(err) });
-          return;
-        }
-        if (!root) return; // 用户取消，什么都不做
+        setScanPickerOpen(true);
+        return;
       }
 
       setScanning(true);
@@ -542,10 +538,6 @@ export default function App() {
           gameId={detailId}
           onClose={() => setDetailId(null)}
           onPlay={handlePlay}
-          onEdit={() => {
-            setDetailId(null);
-            setEditing(true);
-          }}
           onOpenFolder={() => void handleOpenFolder()}
         />
       </TooltipProvider>
@@ -654,6 +646,14 @@ export default function App() {
             onOpenFolder={handleOpenFolder}
           />
         </div>
+
+        <PathPickerDialog
+          open={scanPickerOpen}
+          mode="folder"
+          title="选择游戏库根目录"
+          onOpenChange={setScanPickerOpen}
+          onPick={(path) => void handleScan(path)}
+        />
 
         <DeleteGamesDialog
           open={deleteTarget.length > 0}

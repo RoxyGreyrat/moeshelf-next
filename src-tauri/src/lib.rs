@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod models;
+mod scrape;
 
 use tauri::Manager;
 
@@ -8,12 +9,10 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // 原生文件夹选择框（只在 commands::pick_folder 里用 Rust API，
-        // 前端不直接 import 这个插件，因此 capabilities 不需要 dialog:* 权限）
-        .plugin(tauri_plugin_dialog::init())
         // 封面协议：cover://<8位hex> → 读旧库缓存里的 .bin，显式带上 Content-Type。
         // 前端在 Windows 上访问的是 http://cover.localhost/<hash>（Tauri 的协议映射规则）。
-        .register_asynchronous_uri_scheme_protocol("cover", |_ctx, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("cover", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
             let key = request
                 .uri()
                 .path()
@@ -25,11 +24,9 @@ pub fn run() {
 
             // 异步应答：文件 IO 不能阻塞 webview 线程
             std::thread::spawn(move || {
-                let base = db::cover_cache::dir();
-
-                match db::cover_cache::read(&base, &key) {
-                    Some(bytes) => {
-                        let ct = db::cover_cache::content_type(&base, &key);
+                // 用户自己换过的封面在 app 数据目录里，优先读；没有再回落到旧库缓存
+                match db::cover_cache::read_any(&app, &key) {
+                    Some((bytes, ct)) => {
                         let response = tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", ct)
@@ -60,11 +57,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::get_game_detail,
+            commands::list_path,
+            commands::set_cover_from_file,
+            commands::set_cover_from_url,
+            commands::reset_cover,
+            commands::vndb_search,
+            commands::vndb_apply,
             commands::update_game,
             commands::list_ignored_games,
             commands::set_games_ignored,
             commands::delete_games,
-            commands::pick_folder,
             commands::scan_directory,
             commands::list_scan_roots,
             commands::add_scan_root,

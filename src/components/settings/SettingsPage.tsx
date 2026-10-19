@@ -21,7 +21,6 @@ import {
   listIgnoredGames,
   listScanRoots,
   openFolder,
-  pickFolder,
   removeScanRoot,
   setGamesIgnored,
 } from "@/lib/api";
@@ -30,6 +29,7 @@ import type { Game } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 
 /* ------------------------------------------------------------------ 类型 */
 
@@ -200,6 +200,7 @@ export function SettingsPage({
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // 只读一次；设置页是独立的整页，不存在「关掉再开」的缓存问题
   useEffect(() => {
@@ -260,16 +261,10 @@ export function SettingsPage({
     }
   };
 
-  const addRoot = async () => {
-    let dir: string | null = null;
-    try {
-      dir = await pickFolder("选择游戏库根目录");
-    } catch (err) {
-      toast.error("打不开文件夹选择框", { description: String(err) });
-      return;
-    }
-    if (!dir) return;
+  /** 用自制的目录选择器挑目录（不弹系统对话框） */
+  const addRoot = () => setPickerOpen(true);
 
+  const confirmRoot = async (dir: string) => {
     setAdding(true);
     try {
       const root = await addScanRoot(dir);
@@ -650,6 +645,14 @@ export function SettingsPage({
           </div>
         </main>
       </div>
+
+      <PathPickerDialog
+        open={pickerOpen}
+        mode="folder"
+        title="选择游戏库根目录"
+        onOpenChange={setPickerOpen}
+        onPick={(path) => void confirmRoot(path)}
+      />
     </div>
   );
 }

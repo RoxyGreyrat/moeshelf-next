@@ -97,10 +97,6 @@ export interface ScanReport {
   elapsedMs: number;
 }
 
-/** 弹出系统文件夹选择框。用户取消时解析为 null。 */
-export function pickFolder(title?: string): Promise<string | null> {
-  return invoke<string | null>("pick_folder", { title: title ?? null });
-}
 
 /**
  * 扫描一个根目录并写库。
@@ -202,4 +198,72 @@ export interface GameDetail {
 
 export function getGameDetail(id: string): Promise<GameDetail> {
   return invoke<GameDetail>("get_game_detail", { id });
+}
+
+/* ---------------------------------------------------- 自制路径选择器 */
+
+export interface PathEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+}
+
+export interface PathListing {
+  /** 当前目录；null = 还没进入目录（只列盘符） */
+  path: string | null;
+  parent: string | null;
+  entries: PathEntry[];
+}
+
+/** 列目录（不弹系统对话框，交给自制的选择器渲染） */
+export function listPath(path?: string | null): Promise<PathListing> {
+  return invoke<PathListing>("list_path", { path: path ?? null });
+}
+
+/* ---------------------------------------------------- 封面编辑 */
+
+/** 用本地图片当封面（会复制进应用数据目录，之后删原图也不影响） */
+export function setCoverFromFile(id: string, source: string): Promise<Game> {
+  return invoke<Game>("set_cover_from_file", { id, source });
+}
+
+/** 用图片 URL 当封面（先下载到本地，断网也不会变裂图） */
+export function setCoverFromUrl(id: string, url: string): Promise<Game> {
+  return invoke<Game>("set_cover_from_url", { id, url });
+}
+
+/** 恢复默认封面（清空并解锁） */
+export function resetCover(id: string): Promise<Game> {
+  return invoke<Game>("reset_cover", { id });
+}
+
+/* ---------------------------------------------------- VNDB 刮削 */
+
+export interface VnCandidate {
+  id: string;
+  title: string;
+  altTitle: string;
+  titleCn: string;
+  imageUrl: string | null;
+  released: string;
+  /** 已归一 0~10 */
+  rating: number;
+  developer: string;
+  description: string;
+}
+
+export function vndbSearch(query: string, limit = 10): Promise<VnCandidate[]> {
+  return invoke<VnCandidate[]>("vndb_search", { query, limit });
+}
+
+export interface ScrapeReport {
+  game: Game;
+  updatedFields: string[];
+  skippedLocked: string[];
+  characters: number;
+  coverSaved: boolean;
+}
+
+export function vndbApply(id: string, vndbId: string): Promise<ScrapeReport> {
+  return invoke<ScrapeReport>("vndb_apply", { id, vndbId });
 }

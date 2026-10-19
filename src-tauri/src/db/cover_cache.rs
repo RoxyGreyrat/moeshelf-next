@@ -40,6 +40,72 @@ pub fn content_type(base: &Path, key: &str) -> String {
     "image/jpeg".to_string()
 }
 
+/* ------------------------------ 用户自定义封面 ------------------------------ */
+
+/// 用户自己选的封面（本地图片或下载下来的 URL）存在应用的 `data/covers/`。
+///
+/// 文件名同样是 `djb2(来源字符串)` —— 来源是本地路径时就是 `djb2(路径)`，
+/// 是 URL 时就是 `djb2(url)`。这样前端 `coverSrc()` 一行都不用改：
+/// 它只负责把封面来源哈希成 8 位 hex，协议层决定去哪个目录取。
+pub fn local_dir(app: &tauri::AppHandle) -> PathBuf {
+    match super::data_dir(app) {
+        Ok(dir) => dir.join("covers"),
+        Err(_) => PathBuf::from("covers"),
+    }
+}
+
+/// 按文件头判断图片类型。用户选的图可能是 png/webp，不能一律当 jpeg 返回。
+pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        "image/jpeg"
+    } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else if bytes.len() > 12 && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() > 2 && bytes[0] == b'B' && bytes[1] == b'M' {
+        "image/bmp"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// 是不是一个能当封面用的图片
+pub fn is_image_bytes(bytes: &[u8]) -> bool {
+    sniff_content_type(bytes).starts_with("image/")
+}
+
+/// 写进应用自建封面缓存，返回写入的文件路径
+pub fn store(app: &tauri::AppHandle, key: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    if !is_valid_key(key) {
+        return Err(format!("非法的封面键：{key}"));
+    }
+    let dir = local_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建封面目录失败：{e}"))?;
+    let path = dir.join(format!("{key}.bin"));
+    std::fs::write(&path, bytes).map_err(|e| format!("写入封面失败：{e}"))?;
+    Ok(path)
+}
+
+/// 先查应用自建缓存（用户自己换过的封面优先），再回落到旧库缓存。
+pub fn read_any(app: &tauri::AppHandle, key: &str) -> Option<(Vec<u8>, String)> {
+    if !is_valid_key(key) {
+        return None;
+    }
+
+    let local = local_dir(app).join(format!("{key}.bin"));
+    if let Ok(bytes) = std::fs::read(&local) {
+        if !bytes.is_empty() {
+            let ct = sniff_content_type(&bytes).to_string();
+            return Some((bytes, ct));
+        }
+    }
+
+    let base = dir();
+    read(&base, key).map(|b| (b, content_type(&base, key)))
+}
+
 /// 读取封面字节。key 非法或文件不存在都返回 None。
 pub fn read(base: &Path, key: &str) -> Option<Vec<u8>> {
     if !is_valid_key(key) {
@@ -51,6 +117,16 @@ pub fn read(base: &Path, key: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sniffs_image_types() {
+        assert_eq!(sniff_content_type(&[0xFF, 0xD8, 0x00]), "image/jpeg");
+        assert_eq!(sniff_content_type(&[0x89, 0x50, 0x4E, 0x47, 0x00]), "image/png");
+        assert_eq!(sniff_content_type(b"GIF89a"), "image/gif");
+        assert_eq!(sniff_content_type(b"not an image"), "application/octet-stream");
+        assert!(is_image_bytes(&[0xFF, 0xD8, 0x00]));
+        assert!(!is_image_bytes(b"nope"));
+    }
 
     #[test]
     fn rejects_path_traversal() {
