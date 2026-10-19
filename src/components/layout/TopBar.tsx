@@ -1,4 +1,8 @@
 import {
+  ArrowDownWideNarrow,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  Check,
   ChevronDown,
   FolderOpen,
   FolderPlus,
@@ -10,7 +14,7 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import type { ViewMode } from "@/types/game";
+import type { SortKey, SortState, ViewMode } from "@/types/game";
 import type { ScanRoot } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +39,8 @@ interface TopBarProps {
   onQueryChange: (v: string) => void;
   view: ViewMode;
   onViewChange: (v: ViewMode) => void;
+  sort: SortState;
+  onSortChange: (s: SortState) => void;
   /** 传了 root 就直接扫这个目录；不传则弹文件夹选择框 */
   onScan: (root?: string) => void;
   scanning: boolean;
@@ -44,9 +50,16 @@ interface TopBarProps {
   searchRef: React.RefObject<HTMLInputElement | null>;
 }
 
+/** 排序字段。顺序就是下拉里的顺序：玩家最常用的是发售日和名称 */
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "released", label: "发售日" },
+  { key: "title", label: "名称" },
+  { key: "rating", label: "评分" },
+  { key: "added", label: "入库时间" },
+];
+
 /** `E:\galgame\yuzusoft` → `yuzusoft`；`E:\` → `E:\` */
-function baseName(path: string): string {
-  const parts = path.split(/[\\/]+/).filter(Boolean);
+function baseName(path: string): string {  const parts = path.split(/[\\/]+/).filter(Boolean);
   if (parts.length <= 1) return path;
   return parts[parts.length - 1];
 }
@@ -61,6 +74,8 @@ export function TopBar({
   onQueryChange,
   view,
   onViewChange,
+  sort,
+  onSortChange,
   onScan,
   scanning,
   roots,
@@ -96,6 +111,55 @@ export function TopBar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* 排序：一个下拉选字段 + 一个按钮翻方向。
+            拆成两个控件而不是「发售日↑/发售日↓」八项下拉：切字段时方向不会被重置。 */}
+        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 rounded-md px-2 text-[12px] font-normal text-foreground"
+                aria-label="排序方式"
+              >
+                <ArrowUpDown className="size-3.5 text-muted-foreground" />
+                {SORT_OPTIONS.find((o) => o.key === sort.key)?.label ?? "排序"}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[150px]">
+              <DropdownMenuLabel className="text-[10.5px] font-normal tracking-wide text-muted-foreground">
+                排序方式
+              </DropdownMenuLabel>
+              {SORT_OPTIONS.map((o) => (
+                <DropdownMenuItem
+                  key={o.key}
+                  onSelect={() => onSortChange({ ...sort, key: o.key })}
+                  className="gap-2 text-[12.5px]"
+                >
+                  <span className="flex-1">{o.label}</span>
+                  {sort.key === o.key && <Check className="size-3.5" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <button
+            type="button"
+            onClick={() =>
+              onSortChange({ ...sort, dir: sort.dir === "asc" ? "desc" : "asc" })
+            }
+            aria-label={sort.dir === "desc" ? "当前倒序，点击改为正序" : "当前正序，点击改为倒序"}
+            title={sort.dir === "desc" ? "倒序（点击改成正序）" : "正序（点击改成倒序）"}
+            className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            {sort.dir === "desc" ? (
+              <ArrowDownWideNarrow className="size-3.5" />
+            ) : (
+              <ArrowUpNarrowWide className="size-3.5" />
+            )}
+          </button>
+        </div>
+
         <ToggleGroup
           type="single"
           value={view}

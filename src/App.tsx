@@ -16,12 +16,14 @@ import {
   updateGame,
 } from "@/lib/api";
 import type { AutoMatchProgress, ScanProgress, ScanRoot } from "@/lib/api";
+import { sortGames } from "@/lib/sort";
 import type {
   Filters,
   Game,
   GridState,
   Platform,
   SelectMode,
+  SortState,
   ViewMode,
 } from "@/types/game";
 import { PLATFORM_LABEL } from "@/types/game";
@@ -40,7 +42,15 @@ import { StateSwitcher } from "@/components/debug/StateSwitcher";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const EMPTY_FILTERS: Filters = { platforms: [], engines: [], tags: [] };
+const EMPTY_FILTERS: Filters = {
+  platforms: [],
+  developers: [],
+  engines: [],
+  tags: [],
+};
+
+/** 默认按发售日倒序 —— 新作在前，和"书架"的直觉一致 */
+const DEFAULT_SORT: SortState = { key: "released", dir: "desc" };
 
 function toggleIn<T>(list: T[], value: T): T[] {
   return list.includes(value)
@@ -56,6 +66,7 @@ export default function App() {
   const [gridState, setGridState] = useState<GridState>("loading");
   const [selectMode, setSelectMode] = useState<SelectMode>("single");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   // 选中的游戏（多选时是集合，单选时只有一个）
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -147,6 +158,11 @@ export default function App() {
     return games.filter((g) => {
       if (filters.platforms.length && !filters.platforms.includes(g.platform))
         return false;
+      if (
+        filters.developers.length &&
+        !filters.developers.includes(g.developer ?? "")
+      )
+        return false;
       if (filters.engines.length && !filters.engines.includes(g.engine))
         return false;
       if (filters.tags.length && !filters.tags.every((t) => g.tags.includes(t)))
@@ -164,6 +180,9 @@ export default function App() {
       return haystack.includes(q);
     });
   }, [games, filters, query]);
+
+  /** 排序后的列表：网格、键盘导航都用它（同一份顺序，方向键才不会跳） */
+  const sortedGames = useMemo(() => sortGames(filtered, sort), [filtered, sort]);
 
   const activeGame = useMemo(() => {
     const id = selectedIds[selectedIds.length - 1];
@@ -191,7 +210,19 @@ export default function App() {
   }, [cursorId, filtered, selectedIds]);
 
   const activeCount =
-    filters.platforms.length + filters.engines.length + filters.tags.length;
+    filters.platforms.length +
+    filters.developers.length +
+    filters.engines.length +
+    filters.tags.length;
+
+  const developerCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const g of games) {
+      const key = g.developer ?? "";
+      map[key] = (map[key] ?? 0) + 1;
+    }
+    return map;
+  }, [games]);
 
   const platformCounts = useMemo(() => {
     const base = Object.fromEntries(
@@ -511,13 +542,14 @@ export default function App() {
 
   const moveCursor = useCallback(
     (delta: number) => {
-      if (gridState !== "normal" || filtered.length === 0) return;
+      // 用排序后的列表：方向键的"下一个"必须和眼睛看到的顺序一致
+      if (gridState !== "normal" || sortedGames.length === 0) return;
       const current = cursorId
-        ? filtered.findIndex((g) => g.id === cursorId)
+        ? sortedGames.findIndex((g) => g.id === cursorId)
         : -1;
       const base = current >= 0 ? current : 0;
-      const next = Math.max(0, Math.min(filtered.length - 1, base + delta));
-      const id = filtered[next].id;
+      const next = Math.max(0, Math.min(sortedGames.length - 1, base + delta));
+      const id = sortedGames[next].id;
 
       setCursorId(id);
       if (selectMode === "single") setSelectedIds([id]);
@@ -528,7 +560,7 @@ export default function App() {
           ?.scrollIntoView({ block: "nearest" });
       });
     },
-    [cursorId, filtered, gridState, selectMode],
+    [cursorId, gridState, selectMode, sortedGames],
   );
 
   useEffect(() => {
@@ -676,6 +708,8 @@ export default function App() {
           onQueryChange={setQuery}
           view={view}
           onViewChange={(v) => startTransition(() => setView(v))}
+          sort={sort}
+          onSortChange={(next) => startTransition(() => setSort(next))}
           onScan={handleScan}
           scanning={scanning}
           roots={roots}
@@ -690,12 +724,16 @@ export default function App() {
           <FilterSidebar
             filters={filters}
             platformCounts={platformCounts}
+            developerCounts={developerCounts}
             engineCounts={engineCounts}
             tagCounts={tagCounts}
             allTags={allTags}
             activeCount={activeCount}
             onTogglePlatform={(p) =>
               setFilters((f) => ({ ...f, platforms: toggleIn(f.platforms, p) }))
+            }
+            onToggleDeveloper={(d) =>
+              setFilters((f) => ({ ...f, developers: toggleIn(f.developers, d) }))
             }
             onToggleEngine={(e) =>
               setFilters((f) => ({ ...f, engines: toggleIn(f.engines, e) }))
@@ -744,7 +782,7 @@ export default function App() {
                 需要 ≥10px 的呼吸空间，这里给 24px。 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-44 pt-6" ref={listScrollRef}>
               <GameGrid
-                games={filtered}
+                games={sortedGames}
                 view={view}
                 state={gridState}
                 selectedIds={selectedIds}

@@ -99,8 +99,20 @@ export type ViewMode = "grid" | "list";
 
 export interface Filters {
   platforms: Platform[];
+  /** 会社：扫描/迁移进来的 `developer`，空串的归到"未登记" */
+  developers: string[];
   engines: Engine[];
   tags: string[];
+}
+
+/** 主列表排序方式 */
+export type SortKey = "released" | "title" | "rating" | "added";
+
+export type SortDir = "asc" | "desc";
+
+export interface SortState {
+  key: SortKey;
+  dir: SortDir;
 }
 
 /**
