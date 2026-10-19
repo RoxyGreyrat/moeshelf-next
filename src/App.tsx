@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
 import {
@@ -526,6 +527,26 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * 切换网格 / 列表。
+   *
+   * 用浏览器原生的 View Transitions：浏览器给旧状态截一张快照，再和新状态交叉淡化，
+   * 期间不重排、不重建 —— 200 多张卡片的切换也不会闪。
+   * 不支持该 API 的 WebView 直接切，不报错。
+   */
+  const handleViewChange = useCallback((next: ViewMode) => {
+    const doc = document as Document & {
+      startViewTransition?: (cb: () => void) => unknown;
+    };
+    if (typeof doc.startViewTransition !== "function") {
+      startTransition(() => setView(next));
+      return;
+    }
+    doc.startViewTransition(() => {
+      flushSync(() => setView(next));
+    });
+  }, []);
+
   const handlePatch = useCallback(() => {
     if (!activeGame) return;
     setPatchOpen(true);
@@ -735,7 +756,7 @@ export default function App() {
           query={query}
           onQueryChange={setQuery}
           view={view}
-          onViewChange={(v) => startTransition(() => setView(v))}
+          onViewChange={handleViewChange}
           sort={sort}
           onSortChange={(next) => startTransition(() => setSort(next))}
           onScan={handleScan}
@@ -805,7 +826,11 @@ export default function App() {
             {/* pt-6 是必须的：卡片悬停会上浮 4px + 放大 1.04（顶部再外扩约 4.5px），
                 选中外框还额外向外 3px。滚动容器没有顶部内边距时，这 8~9px 会被直接切平。
                 需要 ≥10px 的呼吸空间，这里给 24px。 */}
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-44 pt-6" ref={listScrollRef}>
+            <div
+              className="min-h-0 flex-1 overflow-y-auto px-6 pb-44 pt-6"
+              ref={listScrollRef}
+              data-scroll-root="true"
+            >
               <GameGrid
                 games={sortedGames}
                 view={view}

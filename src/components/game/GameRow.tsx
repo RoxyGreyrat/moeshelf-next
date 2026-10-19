@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { CircleCheck, Star } from "lucide-react";
 import { motion } from "motion/react";
 import type { Game } from "@/types/game";
@@ -14,10 +15,17 @@ interface GameRowProps {
 }
 
 /**
- * 列表行（纯视觉层）。外层的 motion.button / layout 由 GameItem 统一负责，
- * 所以从网格切到列表时，同一个 DOM 节点会原地变形，而不是闪一下换组件。
+ * 列表行（纯视觉层）。外层的 motion.button / layout 由 GameItem 统一负责。
+ *
+ * 用 memo 包起来：网格视图下它是隐藏的，切视图时只要 props 没变就不重建。
  */
-export function GameRow({ game, hovered, selected, cursor, multi }: GameRowProps) {
+export const GameRow = memo(function GameRow({
+  game,
+  hovered,
+  selected,
+  cursor,
+  multi,
+}: GameRowProps) {
   return (
     <motion.div
       className="flex w-full items-center gap-3 rounded-lg border px-2.5 py-2"
@@ -85,4 +93,4 @@ export function GameRow({ game, hovered, selected, cursor, multi }: GameRowProps
       </div>
     </motion.div>
   );
-}
+});

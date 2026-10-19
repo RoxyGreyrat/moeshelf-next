@@ -81,7 +81,10 @@ export function CoverArt({
         <img
           src={imgSrc}
           alt=""
-          loading="lazy"
+          /* 不用 lazy：封面全部来自本地 `cover://` 缓存，读取是毫秒级。
+             lazy 会让"切到列表视图 / 往下滚"时一张张蹦出来 ——
+             那正是"列表一点一点加载"的观感来源。 */
+          loading="eager"
           decoding="async"
           draggable={false}
           className="absolute inset-0 h-full w-full object-cover"

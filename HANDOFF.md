@@ -804,6 +804,33 @@ cd8e8c54 Girls Frantic Clan              E:\galgame\戯画\ガールズ...      
 - `launch_game` 成功时顺手把确认过的启动项写库并加锁，省掉一次 `update_game` 往返
 - 启动候选 `list_exe_candidates` 与启动分开：面板可以反复打开、重试，不必重复读目录
 
+### 7.18 全局动效与视图切换（2026-10-19）
+
+**视图切换不再自己写动画。** 212 张卡片重排一次要 ~200ms，
+自己播 opacity/transform 只会在重排之后才开始，"看起来像刷新"。现在改成：
+
+| 层级 | 用什么 | 说明 |
+|---|---|---|
+| 页面级状态切换（网格 ↔ 列表） | **浏览器的 View Transitions API** | `document.startViewTransition(() => flushSync(setView))`。浏览器给旧状态截图、与新状态交叉淡化，截图期间页面不重排 —— 所以是"化过去"而不是"闪一下" |
+| 组件级（详情面板、启动面板、选中环） | **motion 的 spring** | 真正的物理弹簧，不是时长曲线 |
+| 过渡曲线 / 关键帧 | CSS 变量 | 只是把曲线集中定义，供上面两层复用 |
+
+- `src/index.css` 定义 `--ease-silk / --ease-snap / --ease-dur-1/2/3`，全局 `button/a/label/input` 统一走丝绸曲线；
+- `[data-grid-root]` 命名 `view-transition-name: game-grid`，只让书架区域参与淡化，侧栏/详情面板照常瞬间更新；
+- 尊重 `prefers-reduced-motion`：系统关了动效就全关。
+
+**为切换动画做的三项性能改造**
+
+1. **取消分页**：原来一次只渲染 40 个、滚到底再追加（"已显示 40/212，继续滚动加载…"）。
+   现在 212 个全渲染 —— 滚动条长度稳定，不会"越滚越长"。
+2. **卡片/行双层常驻**：`GameCard` 和 `GameRow` 都挂在 DOM 里，显隐由容器上的 `data-view` 用 CSS 控制。
+   切视图时 React 一个条目都不重建（两个子组件都 `memo`），只改一个属性 → 布局和截图的耗时大幅下降。
+3. **列表行 `content-visibility: auto`**：行高固定 78px，视口外的行跳过布局/绘制。
+
+**实测**：切换的可视过程是交叉淡化（旧网格淡出 + 新列表淡入，`vt-fade-out` 140ms / `vt-fade-in` 220ms）。
+主线程仍有一次 ~200ms 的首帧布局（212 行），被 View Transition 的旧快照盖住，所以看到的是"停顿一下再化过去"，不再闪烁。
+真要做到零停顿，只能上虚拟列表。
+
 ---
 
 ## 8. 不许破坏的架构底线

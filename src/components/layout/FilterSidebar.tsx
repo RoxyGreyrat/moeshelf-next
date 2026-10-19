@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
 
 import type { Engine, Filters, Platform } from "@/types/game";
@@ -9,15 +10,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { springPanel } from "@/lib/motion";
 import { loadGroupOpen, saveGroupOpen } from "@/lib/persist";
 
 /**
  * 左侧筛选面板 —— 参照 Wallpaper Engine 的「筛选」：
  *
- * - 每个分类是一个可折叠的分组（会社 / 引擎 / 标签 / 平台），标题右侧带数量；
- * - 每行是「复选框 + 名称 + 该值下的条目数」，数量是判断"这个筛选值值不值得点"的唯一依据；
- * - 顶部一个搜索框，值多了（630 个标签）靠它找，不靠滚动；
- * - 每组默认只露 8 行，点「显示全部」才展开 —— 否则标签组会把整个侧栏撑成一面墙。
+ * - 每个分类是一个可折叠的分组（会社 / 引擎 / 平台），标题右侧带数量；
+ * - 每行是「复选框 + 名称 + 该值下的条目数」，数量是判断"这个筛选值值不值得点"的依据；
+ * - 顶部一个搜索框，值多了靠它找，不靠滚动；
+ * - 每组默认只露 8 行，点「显示全部」才展开 —— 否则会社组会把整个侧栏撑成一面墙。
  *
  * 为什么把标签从"胶囊云"改成"列表行"：胶囊云看不出数量、也没法搜索，
  * 标签一多就只是花花绿绿一片；列表行有数量、能搜索、和会社/引擎用同一套交互。
@@ -152,7 +154,7 @@ function FilterGroup({
       </button>
 
       {isOpen && (
-        <div className="space-y-0.5 pb-1">
+        <div className="section-in space-y-0.5 pb-1">
           {shown.map((o) => {
             const id = `${title}-${o.value || "__empty"}`;
             const checked = selected.includes(o.value);
@@ -267,139 +269,162 @@ export function FilterSidebar({
     developerOptions.length +
     engineOptions.length;
 
-  /* ---------------------------------------------------------------- 收起态 */
-  // 收成 44px 的窄条：中间的书架能多出 200px，窗口小的时候很有用。
-  // 展开按钮做成竖排文字，比一个光秃秃的图标好认。
-  if (collapsed) {
-    return (
-      <aside className="flex w-11 shrink-0 flex-col items-center gap-3 border-r border-border bg-background py-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="展开筛选栏"
-          onClick={onToggleCollapsed}
-          className="size-8 text-muted-foreground hover:text-foreground"
-        >
-          <PanelLeftOpen className="size-4" />
-        </Button>
-
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          aria-label="展开筛选栏"
-          className="flex flex-1 items-start justify-center rounded-md py-2 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-        >
-          <span className="text-[12px] font-medium tracking-[0.35em] [writing-mode:vertical-rl]">
-            筛选
-          </span>
-        </button>
-
-        {activeCount > 0 && (
-          <Badge
-            variant="secondary"
-            className="h-5 rounded-full px-1.5 text-[10px] tabular-nums"
-          >
-            {activeCount}
-          </Badge>
-        )}
-      </aside>
-    );
-  }
+  /* ------------------------------------------------------------ 外壳 */
+  // 收起/展开必须用**同一个** <motion.aside> 做宽度过渡：
+  // 如果两个分支各 return 一个 aside，节点会被换掉，宽度是瞬间跳变的，动画就不存在了。
+  const fade = { duration: 0.14, ease: [0.4, 0, 0.2, 1] as const };
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-background">
-      <div className="flex items-center justify-between px-4 pb-2 pt-4">
-        <span className="text-[13px] font-semibold tracking-tight">筛选</span>
-        <div className="flex items-center gap-1">
-          {activeCount > 0 && (
-            <Badge
-              variant="secondary"
-              className="h-5 rounded-full px-1.5 text-[10px] tabular-nums"
-            >
-              {activeCount}
-            </Badge>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="收起筛选栏"
-            title="收起筛选栏"
-            onClick={onToggleCollapsed}
-            className="size-6 text-muted-foreground hover:text-foreground"
+    <motion.aside
+      initial={false}
+      animate={{ width: collapsed ? 44 : 240 }}
+      transition={springPanel}
+      className="relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-background"
+    >
+      <AnimatePresence initial={false} mode="wait">
+        {collapsed ? (
+          /* 收成 44px 的窄条：中间的书架能多出约 200px，窗口小的时候很有用。
+             展开按钮做成竖排文字，比一个光秃秃的图标好认。 */
+          <motion.div
+            key="rail"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, transition: fade }}
+            exit={{ opacity: 0, transition: fade }}
+            className="flex h-full w-11 flex-col items-center gap-3 py-3"
           >
-            <PanelLeftClose className="size-3.5" />
-          </Button>
-        </div>
-      </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="展开筛选栏"
+              onClick={onToggleCollapsed}
+              className="size-8 text-muted-foreground hover:text-foreground"
+            >
+              <PanelLeftOpen className="size-4" />
+            </Button>
 
-      <div className="px-3 pb-2">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索会社 / 引擎"
-            aria-label="搜索筛选项"
-            className="h-7 rounded-md border-border bg-card pl-7 pr-7 text-[12px] placeholder:text-muted-foreground/80"
-          />
-          {searching && (
             <button
               type="button"
-              onClick={() => setSearch("")}
-              aria-label="清空筛选搜索"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              onClick={onToggleCollapsed}
+              aria-label="展开筛选栏"
+              className="flex flex-1 items-start justify-center rounded-md py-2 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
             >
-              <X className="size-3" />
+              <span className="text-[12px] font-medium tracking-[0.35em] [writing-mode:vertical-rl]">
+                筛选
+              </span>
             </button>
-          )}
-        </div>
-      </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="px-1.5 pb-4">
-          <FilterGroup
-            title="会社"
-            options={developerOptions}
-            selected={filters.developers}
-            onToggle={onToggleDeveloper}
-            searching={searching}
-          />
-          <FilterGroup
-            title="引擎"
-            options={engineOptions}
-            selected={filters.engines}
-            onToggle={(v) => onToggleEngine(v as Engine)}
-            searching={searching}
-          />
-          <FilterGroup
-            title="平台"
-            options={visiblePlatforms}
-            selected={filters.platforms}
-            onToggle={(v) => onTogglePlatform(v as Platform)}
-            searching={searching}
-            defaultOpen={false}
-          />
+            {activeCount > 0 && (
+              <Badge
+                variant="secondary"
+                className="h-5 rounded-full px-1.5 text-[10px] tabular-nums"
+              >
+                {activeCount}
+              </Badge>
+            )}
+          </motion.div>
+        ) : (
+          <motion.div
+            key="full"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, transition: fade }}
+            exit={{ opacity: 0, transition: fade }}
+            className="flex h-full w-60 flex-col"
+          >
+            <div className="flex items-center justify-between px-4 pb-2 pt-4">
+              <span className="text-[13px] font-semibold tracking-tight">筛选</span>
+              <div className="flex items-center gap-1">
+                {activeCount > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className="h-5 rounded-full px-1.5 text-[10px] tabular-nums"
+                  >
+                    {activeCount}
+                  </Badge>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="收起筛选栏"
+                  title="收起筛选栏"
+                  onClick={onToggleCollapsed}
+                  className="size-6 text-muted-foreground hover:text-foreground"
+                >
+                  <PanelLeftClose className="size-3.5" />
+                </Button>
+              </div>
+            </div>
 
-          {searching && totalShown === 0 && (
-            <p className="px-2 py-6 text-center text-[12px] text-muted-foreground">
-              没有匹配「{search.trim()}」的筛选项
-            </p>
-          )}
-        </div>
-      </ScrollArea>
+            <div className="px-3 pb-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="搜索会社 / 引擎"
+                  aria-label="搜索筛选项"
+                  className="h-7 rounded-md border-border bg-card pl-7 pr-7 text-[12px] placeholder:text-muted-foreground/80"
+                />
+                {searching && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch("")}
+                    aria-label="清空筛选搜索"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                )}
+              </div>
+            </div>
 
-      <div className="border-t border-border p-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={activeCount === 0}
-          onClick={onClearAll}
-          className="h-8 w-full justify-start gap-1.5 px-2 text-[12px] font-normal text-muted-foreground hover:text-foreground disabled:opacity-40"
-        >
-          <X className="size-3.5" />
-          清除全部筛选
-        </Button>
-      </div>
-    </aside>
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="px-1.5 pb-4">
+                <FilterGroup
+                  title="会社"
+                  options={developerOptions}
+                  selected={filters.developers}
+                  onToggle={onToggleDeveloper}
+                  searching={searching}
+                />
+                <FilterGroup
+                  title="引擎"
+                  options={engineOptions}
+                  selected={filters.engines}
+                  onToggle={(v) => onToggleEngine(v as Engine)}
+                  searching={searching}
+                />
+                <FilterGroup
+                  title="平台"
+                  options={visiblePlatforms}
+                  selected={filters.platforms}
+                  onToggle={(v) => onTogglePlatform(v as Platform)}
+                  searching={searching}
+                  defaultOpen={false}
+                />
+
+                {searching && totalShown === 0 && (
+                  <p className="px-2 py-6 text-center text-[12px] text-muted-foreground">
+                    没有匹配「{search.trim()}」的筛选项
+                  </p>
+                )}
+              </div>
+            </ScrollArea>
+
+            <div className="border-t border-border p-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={activeCount === 0}
+                onClick={onClearAll}
+                className="h-8 w-full justify-start gap-1.5 px-2 text-[12px] font-normal text-muted-foreground hover:text-foreground disabled:opacity-40"
+              >
+                <X className="size-3.5" />
+                清除全部筛选
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.aside>
   );
 }

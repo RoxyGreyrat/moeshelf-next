@@ -212,3 +212,180 @@
     min-width: 0 !important;
 }
 
+/* ==================================================================
+   全局动效基准
+   ------------------------------------------------------------------
+   统一的"丝滑非线性"曲线与时长，所有过渡都从这里取，避免每个组件各写一套。
+
+   --ease-silk : 主曲线。快起、长收尾 —— 位移和淡入用它，看起来"落得住"。
+   --ease-snap : 强调曲线。用于按下/回弹这种需要一点力度的动作。
+   --ease-in-out-soft : 对称曲线，用于来回切换的过渡。
+
+   时长分三档：120ms（反馈）/ 200ms（常规）/ 320ms（大幅重排）。
+   ================================================================== */
+:root {
+    --ease-silk: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-in-out-soft: cubic-bezier(0.65, 0, 0.35, 1);
+
+    --dur-1: 120ms;
+    --dur-2: 200ms;
+    --dur-3: 320ms;
+}
+
+/*
+ * 所有可交互元素统一走丝绸曲线。
+ * 只改 timing-function，不动 transition-property / duration ——
+ * 各组件自己决定"变什么、变多久"，曲线由全局兜底，这样既统一又不会打架。
+ * 放在 @layer 之外：Tailwind 的 transition-* 工具类在 utilities 层，
+ * 未分层样式优先级更高，才能覆盖到 Button 自带的 transition-all。
+ */
+button,
+[role="button"],
+a,
+label,
+summary,
+input,
+textarea,
+select {
+    transition-timing-function: var(--ease-silk);
+}
+
+/* 工具类：显式声明"这段过渡用丝绸曲线" */
+.ease-silk {
+    transition-timing-function: var(--ease-silk);
+}
+
+/* 卡片/封面悬浮：200ms + 丝绸曲线，比默认的 300ms ease-out 更"跟手" */
+.hover-silk {
+    transition-property: transform, box-shadow, opacity;
+    transition-duration: var(--dur-2);
+    transition-timing-function: var(--ease-silk);
+}
+
+/* ------------------------------------------------------------------
+   视图切换（网格 ↔ 列表）—— 交给浏览器原生的 View Transitions
+   ------------------------------------------------------------------
+   200+ 张卡片重排一定会有几十毫秒的脏帧；与其硬动画，不如让浏览器
+   给旧状态截图、与新状态交叉淡化。截图期间页面不重排，也就不会闪。
+   下面只给网格区域单独命名，侧栏/详情面板照常瞬间更新。
+   ------------------------------------------------------------------ */
+[data-grid-root] {
+    view-transition-name: game-grid;
+}
+
+::view-transition-old(game-grid) {
+    animation: vt-fade-out 140ms var(--ease-silk) both;
+}
+
+::view-transition-new(game-grid) {
+    animation: vt-fade-in 220ms var(--ease-silk) both;
+}
+
+@keyframes vt-fade-out {
+    to {
+        opacity: 0;
+        transform: translate3d(0, -4px, 0);
+    }
+}
+
+@keyframes vt-fade-in {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 4px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+/* 筛选分组展开：高度不做动画（85 行逐帧重排太贵），用淡入 + 下移代替 */
+@keyframes section-in {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -4px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+.section-in {
+    animation: section-in var(--dur-2) var(--ease-silk) both;
+}
+
+/* 列表行 / 详情面板内容淡入 */
+@keyframes rise-in {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 8px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+.rise-in {
+    animation: rise-in 260ms var(--ease-silk) both;
+}
+
+/* ------------------------------------------------------------------
+   网格 / 列的显隐完全交给 CSS
+   ------------------------------------------------------------------
+   GameItem 不再接收 `isGrid`：切换视图时只改容器上的 data-view，
+   212 个条目一个都不用重建 —— 切换从 ~220ms 降到一帧之内，
+   动画才能在点下去的瞬间开始。
+   ------------------------------------------------------------------ */
+[data-view="grid"] .game-layer-list {
+    display: none;
+}
+
+[data-view="list"] .game-layer-grid {
+    display: none;
+}
+
+/*
+ * 列表行的高度是固定的（78px），而且有 200 多行 —— 这是切视图时卡顿的来源：
+ * 一次性给 212 行做布局，主线程会堵 200ms+。
+ * 用 content-visibility 让视口外的行跳过布局/绘制，行高又是常量，滚动条长度不会失真。
+ * 网格不这么做：卡片高度随列宽变化，估算值会让滚动条跳。
+ */
+[data-view="list"] .game-item {
+    content-visibility: auto;
+    contain-intrinsic-size: 78px;
+}
+
+/* 网格下 hover/focus 时整块上浮（替代逐项的 motion whileHover，省 212 个动画实例） */
+.game-layer-grid {
+    transition: transform var(--dur-2) var(--ease-silk);
+}
+
+[data-view="grid"] .game-item:hover .game-layer-grid,
+[data-view="grid"] .game-item:focus-visible .game-layer-grid {
+    transform: translate3d(0, -3px, 0) scale(1.02);
+}
+
+/* 选中环的圆角跟着视图走 */
+[data-view="grid"] .game-ring {
+    border-radius: 15px;
+}
+
+[data-view="list"] .game-ring {
+    border-radius: 11px;
+}
+
+/* 尊重系统的"减少动态效果"：动画留给需要的人，不需要的人立刻拿到结果 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
