@@ -6,7 +6,7 @@ import {
   ImageIcon,
   Pencil,
   Play,
-  Sparkles,
+  CloudDownload,
   Star,
   Users,
 } from "lucide-react";
@@ -21,7 +21,7 @@ import { coverSrc } from "@/lib/cover";
 import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { GameEditDialog } from "@/components/detail/GameEditDialog";
-import { ScrapeDialog } from "@/components/detail/ScrapeDialog";
+import { FetchInfoDialog } from "@/components/detail/FetchInfoDialog";
 import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 
 interface GameDetailPageProps {
@@ -163,12 +163,12 @@ export function GameDetailPage({
   const [descOpen, setDescOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /** 编辑 / 刮削 / 换封面 —— 都在这个页面里完成，不再跳回侧边栏 */
+  /** 编辑 / 获取资料 / 换封面 —— 都在这个页面里完成，不再跳回侧边栏 */
   const [editOpen, setEditOpen] = useState(false);
   const [scrapeOpen, setScrapeOpen] = useState(false);
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
-  /** 变了就重新拉一次详情（保存 / 刮削 / 换封面之后） */
+  /** 变了就重新拉一次详情（保存 / 获取资料 / 换封面之后） */
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((k) => k + 1);
 
@@ -248,8 +248,8 @@ export function GameDetailPage({
           disabled={!game}
           className="h-8 gap-1.5"
         >
-          <Sparkles className="size-3.5" />
-          刮削
+          <CloudDownload className="size-3.5" />
+          获取资料
         </Button>
         <Button
           variant="outline"
@@ -309,16 +309,18 @@ export function GameDetailPage({
           <>
             {/* ---------------------------------------------------------- 头部 */}
             <div className="relative overflow-hidden border-b border-border">
+              {/* 毛玻璃底：模糊放大的封面 + 一层半透明白 + 底部渐变收口。
+                  白不够会压不住深色封面、字看不清；白太多就看不出毛玻璃，只能调这两层。 */}
               <div className="pointer-events-none absolute inset-0" aria-hidden="true">
                 {poster ? (
                   <>
                     <img
                       src={poster}
                       alt=""
-                      className="h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+                      className="h-full w-full scale-125 object-cover opacity-70 blur-3xl saturate-150"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-r from-background/70 via-background/60 to-background/80" />
-                    <div className="absolute inset-0 bg-gradient-to-b from-background/20 via-background/50 to-background" />
+                    <div className="absolute inset-0 bg-background/50 backdrop-blur-[3px]" />
+                    <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-background to-transparent" />
                   </>
                 ) : (
                   <div className="h-full w-full bg-gradient-to-br from-primary/[0.10] to-transparent" />
@@ -371,16 +373,16 @@ export function GameDetailPage({
                   )}
 
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                    <span className="rounded-md bg-card/60 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-white/50 backdrop-blur-md">
                       {game.developer || "会社未知"}
                     </span>
-                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                    <span className="rounded-md bg-card/60 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-white/50 backdrop-blur-md">
                       {game.released || "发售日未知"}
                     </span>
-                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                    <span className="rounded-md bg-card/60 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-white/50 backdrop-blur-md">
                       {engineLabel(game.engine)}
                     </span>
-                    <span className="rounded-md bg-card/70 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-border">
+                    <span className="rounded-md bg-card/60 px-2 py-1 text-[11.5px] text-foreground ring-1 ring-white/50 backdrop-blur-md">
                       {PLATFORM_LABEL[game.platform]}
                     </span>
                     {game.completed && (
@@ -411,7 +413,7 @@ export function GameDetailPage({
 
                 {/* 右侧关键数据：填掉标题右边的空白带 */}
                 <div className="hidden w-[320px] shrink-0 pb-1 lg:block">
-                  <div className="rounded-xl border border-border bg-card/80 p-4 backdrop-blur-[2px]">
+                  <div className="rounded-xl border border-white/50 bg-card/55 p-4 shadow-[0_10px_30px_-18px_rgba(24,24,27,0.45)] backdrop-blur-xl">
                     <div className="flex items-end justify-between gap-3">
                       <div>
                         <p className="text-[10.5px] text-muted-foreground">评分</p>
@@ -465,7 +467,7 @@ export function GameDetailPage({
                       )}
                     >
                       {description ||
-                        "这部游戏还没有简介（旧库刮削时没抓到，或本身就是没收录的条目）。"}
+                        "这部游戏还没有简介（旧库没有收录，或本身就没有简介）。"}
                     </p>
                     {description.length > 320 && (
                       <button
@@ -500,7 +502,7 @@ export function GameDetailPage({
                       <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-[11.5px] leading-relaxed text-muted-foreground">
                         这部还没有角色数据。
                         <br />
-                        旧库刮削时只抓了 196 部，其余条目要等 D 阶段接上刮削后才有。
+                        旧库只收录了 196 部，其余条目要等接入在线资料库后才有。
                       </p>
                     ) : (
                       <ul className="grid grid-cols-[repeat(auto-fill,minmax(126px,1fr))] gap-x-3.5 gap-y-5">
@@ -538,7 +540,7 @@ export function GameDetailPage({
 
                     {game.lockedFields.length > 0 && (
                       <p className="mt-3 text-[10.5px] leading-relaxed text-muted-foreground/70">
-                        已锁定 {game.lockedFields.length} 个字段，重扫和刮削都不会覆盖。
+                        已锁定 {game.lockedFields.length} 个字段，重新扫描和获取资料都不会覆盖。
                       </p>
                     )}
                   </div>
@@ -559,13 +561,13 @@ export function GameDetailPage({
             onOpenChange={setEditOpen}
             onSaved={() => refresh()}
           />
-          <ScrapeDialog
+          <FetchInfoDialog
             open={scrapeOpen}
             game={game}
             onOpenChange={setScrapeOpen}
             onApplied={(_game, report: ScrapeReport) => {
               refresh();
-              // 刮削会改很多字段，用一条系统提示让用户知道"哪些没被改"
+              // 获取资料会改很多字段，用一条系统提示让用户知道"哪些没被改"
               if (report.skippedLocked.length > 0) {
                 toast("部分字段已锁定，未被覆盖", {
                   description: report.skippedLocked.join("、"),

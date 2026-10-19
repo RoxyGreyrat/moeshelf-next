@@ -463,20 +463,25 @@ pub fn reset_cover(db: State<'_, Db>, id: String) -> Result<Game, String> {
     repo::set_cover(&conn, &id, None, false)
 }
 
-/* ------------------------------------------------------------ VNDB 刮削 */
+/* ------------------------------------------------------------ 获取资料（多源） */
 
+/// 搜候选。`source` 取 `vndb` / `bangumi` / `ymgal`。
 #[tauri::command]
-pub async fn vndb_search(
+pub async fn source_search(
+    source: String,
     query: String,
     limit: Option<u32>,
-) -> Result<Vec<crate::scrape::vndb::VnCandidate>, String> {
+) -> Result<Vec<crate::scrape::Candidate>, String> {
     let q = query.trim().to_string();
     if q.is_empty() {
         return Err("搜索词不能为空".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || crate::scrape::vndb::search(&q, limit.unwrap_or(10)))
-        .await
-        .map_err(|e| format!("搜索线程异常：{e}"))?
+    let src = source.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::scrape::search(&src, &q, limit.unwrap_or(10))
+    })
+    .await
+    .map_err(|e| format!("搜索线程异常：{e}"))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,40 +495,36 @@ pub struct ScrapeReport {
     pub cover_saved: bool,
 }
 
-/// 把 VNDB 上某一条应用到这个游戏。
+/// 把某个源上的一条记录应用到游戏。
 ///
-/// 三条规矩：
-/// 1. **锁定的字段一律不动**（`locked_fields` 里有的跳过，并在报告里列出来）；
-/// 2. **声优不覆盖**：VNDB 角色接口没有 CV，旧库从 Bangumi 补过一部分，
-///    按角色名把 CV 合并回去，否则一次刮削就把 800 多条声优清空了；
-/// 3. 网络请求与文件下载都在锁外完成，事务里只留数据库写入。
+/// 三条规矩（三个源共用同一套）：
+/// 1. **锁定的字段一律不动**，并在报告里列出来；
+/// 2. **声优不覆盖**：VNDB / 月幕不返回 CV，旧库从 Bangumi 补过 814 条。
+///    按角色名把旧 CV 合并回新名单，否则一次获取就清空全部声优；
+/// 3. 中文简介只写 `cn_description`，外文简介只写 `description`，互不覆盖。
 #[tauri::command]
-pub async fn vndb_apply(app: AppHandle, id: String, vndb_id: String) -> Result<ScrapeReport, String> {
-    // ---------- 1. 网络（不持锁） ----------
-    let vid = vndb_id.clone();
-    let (vn, chars) = tauri::async_runtime::spawn_blocking(move || {
-        let vn = crate::scrape::vndb::fetch_vn(&vid)?;
-        crate::scrape::vndb::polite_pause();
-        let chars = crate::scrape::vndb::fetch_characters(&vid, &std::collections::HashSet::new())
-            .unwrap_or_default();
-        Ok::<_, String>((vn, chars))
+pub async fn source_apply(
+    app: AppHandle,
+    id: String,
+    source: String,
+    source_id: String,
+) -> Result<ScrapeReport, String> {
+    // ---------- 1. 取详情（不持锁） ----------
+    let src = source.clone();
+    let sid = source_id.clone();
+    let (candidate, chars) = tauri::async_runtime::spawn_blocking(move || {
+        crate::scrape::detail(&src, &sid)
     })
     .await
-    .map_err(|e| format!("刮削线程异常：{e}"))??;
-
-    let cover_url = vn
-        .get("image")
-        .and_then(|i| i.get("url"))
-        .and_then(|u| u.as_str())
-        .unwrap_or_default()
-        .to_string();
+    .map_err(|e| format!("获取线程异常：{e}"))??;
 
     // ---------- 2. 下载封面（不持锁） ----------
+    let cover_url = candidate.image_url.clone().unwrap_or_default();
     let mut cover_saved = false;
     if !cover_url.is_empty() {
         let app2 = app.clone();
         let url2 = cover_url.clone();
-        let saved = tauri::async_runtime::spawn_blocking(move || -> bool {
+        cover_saved = tauri::async_runtime::spawn_blocking(move || -> bool {
             let Ok(bytes) = crate::scrape::fetch_bytes(&url2) else {
                 return false;
             };
@@ -535,7 +536,6 @@ pub async fn vndb_apply(app: AppHandle, id: String, vndb_id: String) -> Result<S
         })
         .await
         .unwrap_or(false);
-        cover_saved = saved;
     }
 
     // ---------- 3. 写库（持锁） ----------
@@ -566,69 +566,43 @@ pub async fn vndb_apply(app: AppHandle, id: String, vndb_id: String) -> Result<S
         }};
     }
 
-    put!(title, "title", crate::scrape::vndb::value_str(&vn, "title"));
-    put!(
-        original_title,
-        "originalTitle",
-        crate::scrape::vndb::value_str(&vn, "alttitle")
-    );
-    put!(
-        title_cn,
-        "titleCn",
-        crate::scrape::vndb::zh_title(&vn)
-    );
-    put!(
-        developer,
-        "developer",
-        crate::scrape::vndb::first_developer(&vn)
-    );
-    put!(
-        released,
-        "released",
-        crate::scrape::vndb::value_str(&vn, "released")
-    );
+    put!(title, "title", candidate.title.clone());
+    put!(title_cn, "titleCn", candidate.title_cn.clone());
+    put!(original_title, "originalTitle", candidate.alt_title.clone());
+    put!(developer, "developer", candidate.developer.clone());
+    put!(released, "released", candidate.released.clone());
 
-    // 评分：VNDB 是 0~100，新库统一 0~10
-    let raw_rating = vn.get("rating").and_then(|r| r.as_f64()).unwrap_or(0.0);
-    if raw_rating > 0.0 {
+    // 中文简介只进 cn_description；外文简介只在原来为空时补进 description
+    put!(cn_description, "cnDescription", candidate.description_cn.clone());
+    if current.description.trim().is_empty() {
+        put!(description, "description", candidate.description.clone());
+    }
+
+    // 评分：各源都归一到 0~10；0 表示"没有评分"，不覆盖
+    if candidate.rating > 0.0 {
         if locked.contains("rating") {
             skipped.push("rating".to_string());
         } else {
-            patch.rating = Some((raw_rating / 10.0 * 10.0).round() / 10.0);
-            patch.rating_source = Some("vndb".to_string());
+            patch.rating = Some(candidate.rating);
+            patch.rating_source = Some(source.clone());
             updated.push("rating".to_string());
         }
     }
 
-    // 简介：只在原来没有的时候补，避免把旧库的中文简介盖成英文
-    if current.description.trim().is_empty() && current.cn_description.trim().is_empty() {
-        let desc = crate::scrape::vndb::value_str(&vn, "description");
-        if !desc.trim().is_empty() && !locked.contains("description") {
-            patch.description = Some(desc);
-            updated.push("description".to_string());
-        }
-    }
-
-    // 标签：只补空，不覆盖（旧库的中文标签比 VNDB 英文 tag 更有用）
-    if current.tags.is_empty() {
-        let tags = crate::scrape::vndb::pick_tags(&vn, 8);
-        if !tags.is_empty() && !locked.contains("tags") {
-            patch.tags = Some(tags);
-            updated.push("tags".to_string());
-        }
-    }
-
     // 封面
-    if cover_url.is_empty() || !cover_saved {
-    } else if locked.contains("coverUrl") {
-        skipped.push("coverUrl".to_string());
-    } else {
-        patch.cover_url = Some(cover_url);
-        updated.push("coverUrl".to_string());
+    if !cover_url.is_empty() && cover_saved {
+        if locked.contains("coverUrl") {
+            skipped.push("coverUrl".to_string());
+        } else {
+            patch.cover_url = Some(cover_url);
+            updated.push("coverUrl".to_string());
+        }
     }
 
-    patch.vndb_id = Some(vndb_id.clone());
-    updated.push("vndbId".to_string());
+    // VNDB 的 id 单独存一列，方便下次直接定位
+    if source == "vndb" {
+        patch.vndb_id = Some(source_id.clone());
+    }
 
     let game = repo::update_game(&conn, &id, &patch, false)?;
 
@@ -661,6 +635,63 @@ pub async fn vndb_apply(app: AppHandle, id: String, vndb_id: String) -> Result<S
         characters,
         cover_saved,
     })
+}
+
+/* ------------------------------------------------------------ 封面候选 */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverOption {
+    pub url: String,
+    pub label: String,
+    pub source: String,
+    pub id: String,
+}
+
+/// 从 VNDB 搜同名作品，把它们各自的封面列出来让用户挑。
+///
+/// VNDB 一部作品只有一张官方封面，所谓"换一张"实际是在**同一作品的不同版本/重制版**
+/// 之间挑（旧项目也是这么做的）。所以这里按标题搜一批，把封面全部列出来。
+#[tauri::command]
+pub async fn cover_candidates(
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<CoverOption>, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err("没有可用的搜索词".to_string());
+    }
+
+    let list = tauri::async_runtime::spawn_blocking(move || {
+        crate::scrape::vndb::search(&q, limit.unwrap_or(12))
+    })
+    .await
+    .map_err(|e| format!("搜索线程异常：{e}"))??;
+
+    let mut out: Vec<CoverOption> = Vec::new();
+    for c in list {
+        let Some(url) = c.image_url else { continue };
+        if out.iter().any(|o| o.url == url) {
+            continue;
+        }
+        let year = if c.released.len() >= 4 {
+            c.released[..4].to_string()
+        } else {
+            String::new()
+        };
+        out.push(CoverOption {
+            label: format!(
+                "{}{}",
+                if c.title_cn.is_empty() { c.title.clone() } else { c.title_cn.clone() },
+                if year.is_empty() { String::new() } else { format!(" · {year}") }
+            ),
+            url,
+            source: "vndb".to_string(),
+            id: c.id,
+        });
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]

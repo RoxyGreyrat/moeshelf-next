@@ -42,7 +42,7 @@ export type GamePatch = Partial<
  * 保存一次编辑。返回更新后从库里重新读出来的整行。
  *
  * `lock` 默认 true：改过的字段会并入 `locked_fields`，界面上显示小锁，
- * 以后刮削不会覆盖人工修改。
+ * 以后获取资料不会覆盖人工修改。
  */
 export function updateGame(
   id: string,
@@ -237,23 +237,36 @@ export function resetCover(id: string): Promise<Game> {
   return invoke<Game>("reset_cover", { id });
 }
 
-/* ---------------------------------------------------- VNDB 刮削 */
+/* ---------------------------------------------------- 获取资料（多源） */
 
-export interface VnCandidate {
+/** 三个信息源统一的候选结构 */
+export interface Candidate {
+  /** vndb / bangumi / ymgal */
+  source: string;
   id: string;
+  /** 主标题（原文或罗马字） */
   title: string;
-  altTitle: string;
+  /** 中文名 */
   titleCn: string;
-  imageUrl: string | null;
-  released: string;
-  /** 已归一 0~10 */
-  rating: number;
+  /** 原文名 */
+  altTitle: string;
   developer: string;
+  released: string;
+  /** 0~10 */
+  rating: number;
+  /** 外文简介 */
   description: string;
+  /** 中文简介 */
+  descriptionCn: string;
+  imageUrl: string | null;
 }
 
-export function vndbSearch(query: string, limit = 10): Promise<VnCandidate[]> {
-  return invoke<VnCandidate[]>("vndb_search", { query, limit });
+export function sourceSearch(
+  source: string,
+  query: string,
+  limit = 10,
+): Promise<Candidate[]> {
+  return invoke<Candidate[]>("source_search", { source, query, limit });
 }
 
 export interface ScrapeReport {
@@ -264,6 +277,22 @@ export interface ScrapeReport {
   coverSaved: boolean;
 }
 
-export function vndbApply(id: string, vndbId: string): Promise<ScrapeReport> {
-  return invoke<ScrapeReport>("vndb_apply", { id, vndbId });
+export function sourceApply(
+  id: string,
+  source: string,
+  sourceId: string,
+): Promise<ScrapeReport> {
+  return invoke<ScrapeReport>("source_apply", { id, source, sourceId });
+}
+
+/** 封面候选：VNDB 同名作品的各版本封面 */
+export interface CoverOption {
+  url: string;
+  label: string;
+  source: string;
+  id: string;
+}
+
+export function coverCandidates(query: string, limit = 12): Promise<CoverOption[]> {
+  return invoke<CoverOption[]>("cover_candidates", { query, limit });
 }

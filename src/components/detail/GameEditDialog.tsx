@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { ImageIcon, Link2, Loader2, RotateCcw, Save, Upload } from "lucide-react";
+import {
+  ImageIcon,
+  Images,
+  Link2,
+  Loader2,
+  RotateCcw,
+  Save,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { resetCover, setCoverFromFile, setCoverFromUrl, updateGame } from "@/lib/api";
@@ -25,6 +33,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PathPickerDialog } from "@/components/common/PathPickerDialog";
+import { CoverPickerDialog } from "@/components/detail/CoverPickerDialog";
 import { coverSrc } from "@/lib/cover";
 
 interface GameEditDialogProps {
@@ -82,6 +91,7 @@ export function GameEditDialog({
   const [saving, setSaving] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [vndbPickerOpen, setVndbPickerOpen] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [coverWarn, setCoverWarn] = useState(false);
 
@@ -192,7 +202,7 @@ export function GameEditDialog({
       onSaved(next);
       onOpenChange(false);
       toast.success(`已保存 ${Object.keys(patch).length} 个字段`, {
-        description: "这些字段已锁定，重扫和刮削都不会覆盖。",
+        description: "这些字段已锁定，重新扫描和获取资料都不会覆盖。",
       });
     } catch (err) {
       console.error("[update_game]", err);
@@ -211,7 +221,7 @@ export function GameEditDialog({
           <DialogHeader className="border-b border-border px-5 py-4">
             <DialogTitle className="text-[15px]">编辑信息</DialogTitle>
             <DialogDescription className="text-[11.5px]">
-              改完的字段会被锁定，之后重新扫描或刮削都不会覆盖。
+              改完的字段会被锁定，之后重新扫描或获取资料都不会覆盖。
             </DialogDescription>
           </DialogHeader>
 
@@ -251,6 +261,16 @@ export function GameEditDialog({
                   >
                     <Upload className="size-3" />
                     本地图片
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 w-full gap-1 px-2 text-[11px]"
+                    disabled={coverBusy}
+                    onClick={() => setVndbPickerOpen(true)}
+                  >
+                    <Images className="size-3" />
+                    从 VNDB 选
                   </Button>
                   <Button
                     variant="ghost"
@@ -432,6 +452,16 @@ export function GameEditDialog({
         title="选择封面图片"
         onOpenChange={setPickerOpen}
         onPick={(path) => void pickLocalCover(path)}
+      />
+
+      <CoverPickerDialog
+        open={vndbPickerOpen}
+        game={game}
+        onOpenChange={setVndbPickerOpen}
+        onPicked={(next) => {
+          onSaved(next);
+          setCoverWarn(false);
+        }}
       />
     </>
   );

@@ -16,6 +16,8 @@ use serde_json::json;
 
 use crate::models::Character;
 
+use super::Candidate;
+
 const API_VN: &str = "https://api.vndb.org/kana/vn";
 const API_CHAR: &str = "https://api.vndb.org/kana/character";
 
@@ -97,6 +99,30 @@ fn to_candidate(vn: &serde_json::Value) -> VnCandidate {
 }
 
 /// 按标题搜候选。`limit` 建议 8~12：再多用户也挑不动，而且 VNDB 会慢。
+impl VnCandidate {
+    /// 转成跨源统一的候选结构
+    pub fn into_candidate(self) -> Candidate {
+        Candidate {
+            source: "vndb".to_string(),
+            id: self.id,
+            title: self.title,
+            title_cn: self.title_cn,
+            alt_title: self.alt_title,
+            developer: self.developer,
+            released: self.released,
+            rating: self.rating,
+            description: self.description,
+            description_cn: String::new(),
+            image_url: self.image_url,
+        }
+    }
+}
+
+/// 直接从 VN 原始 JSON 造统一候选（详情接口用，避免再包一层 VnCandidate）
+pub fn candidate_from_vn(vn: &serde_json::Value) -> Candidate {
+    to_candidate(vn).into_candidate()
+}
+
 pub fn search(query: &str, limit: u32) -> Result<Vec<VnCandidate>, String> {
     let body = json!({
         "filters": ["search", "=", query],
@@ -223,27 +249,6 @@ pub fn fetch_characters(vn_id: &str, locked: &HashSet<String>) -> Result<Vec<Cha
     Ok(out)
 }
 
-/// 提取标签名（过滤掉剧透标签与低权重标签）
-pub fn pick_tags(vn: &serde_json::Value, limit: usize) -> Vec<String> {
-    let Some(list) = vn.get("tags").and_then(|t| t.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut items: Vec<(f64, String)> = list
-        .iter()
-        .filter(|t| num(t, "spoiler") == 0.0 && num(t, "rating") >= 2.0)
-        .map(|t| (num(t, "rating"), value_str(t, "name")))
-        .filter(|(_, name)| !name.is_empty())
-        .collect();
-
-    items.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    items
-        .into_iter()
-        .take(limit)
-        .map(|(_, name)| name)
-        .collect()
-}
-
 /// 两次请求之间歇一下。VNDB 建议 1 req/s，这里留 300ms 是因为一次刮削最多连发两枪。
 pub fn polite_pause() {
     sleep(Duration::from_millis(300));
@@ -300,15 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn tags_skip_spoilers_and_low_weight() {
-        assert_eq!(pick_tags(&sample(), 8), vec!["Nakige"]);
-    }
-
-    #[test]
     fn missing_fields_do_not_panic() {
         let c = to_candidate(&serde_json::json!({}));
         assert!(c.id.is_empty());
         assert_eq!(c.rating, 0.0);
-        assert_eq!(pick_tags(&serde_json::json!({}), 8).len(), 0);
     }
 }

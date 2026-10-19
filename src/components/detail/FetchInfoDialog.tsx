@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Loader2, RefreshCw, Search, Sparkles, Star } from "lucide-react";
+import {
+  Check,
+  CloudDownload,
+  Loader2,
+  RefreshCw,
+  Search,
+  Star,
+} from "lucide-react";
 import { toast } from "sonner";
 
-import { vndbApply, vndbSearch } from "@/lib/api";
-import type { ScrapeReport, VnCandidate } from "@/lib/api";
+import { sourceApply, sourceSearch } from "@/lib/api";
+import type { Candidate, ScrapeReport } from "@/lib/api";
 import type { Game } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,8 +21,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
-interface ScrapeDialogProps {
+/** 三个信息源。id 与 Rust 侧 `scrape::search` 的分发键一致 */
+const SOURCES = [
+  { id: "vndb", label: "VNDB", hint: "角色最全，有官方中文名" },
+  { id: "bangumi", label: "Bangumi", hint: "中文简介，角色带声优" },
+  { id: "ymgal", label: "月幕", hint: "中文简介与中文名" },
+] as const;
+
+interface FetchInfoDialogProps {
   open: boolean;
   game: Game;
   onOpenChange: (open: boolean) => void;
@@ -23,91 +38,127 @@ interface ScrapeDialogProps {
 }
 
 /**
- * VNDB 刮削：搜候选 → 人工挑一条 → 应用。
+ * 「获取资料」：挑一个信息源 → 搜候选 → 人工确认 → 应用。
  *
- * 刻意**不做全自动匹配**：galgame 的标题（尤其汉化名）和 VNDB 的罗马字/日文名
- * 经常对不上，自动挑错一次就会把整部游戏的标题、会社、封面全改错，
- * 而这些都是"锁定后才不会被覆盖"的字段，改错要手动一项项修。
- * 让用户看一眼缩略图再点，成本低得多。
+ * 刻意不做自动匹配：汉化名和各站的日文/罗马字名经常对不上，
+ * 自动挑错一次会把标题、会社、封面全改错，而这些都是"锁定后不再被覆盖"的字段。
  */
-export function ScrapeDialog({
+export function FetchInfoDialog({
   open,
   game,
   onOpenChange,
   onApplied,
-}: ScrapeDialogProps) {
+}: FetchInfoDialogProps) {
+  const [source, setSource] = useState<string>("vndb");
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<VnCandidate[] | null>(null);
+  const [results, setResults] = useState<Candidate[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applyingId, setApplyingId] = useState<string | null>(null);
 
-  const runSearch = useCallback(async (q: string) => {
-    const text = q.trim();
-    if (!text) return;
-    setSearching(true);
-    setError(null);
-    try {
-      setResults(await vndbSearch(text, 10));
-    } catch (err) {
-      console.error("[vndb_search]", err);
-      setError(String(err));
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }, []);
+  const runSearch = useCallback(
+    async (src: string, q: string) => {
+      const text = q.trim();
+      if (!text) return;
+      setSearching(true);
+      setError(null);
+      setResults(null);
+      try {
+        setResults(await sourceSearch(src, text, 10));
+      } catch (err) {
+        console.error("[source_search]", err);
+        setError(String(err));
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!open) return;
-    // 默认用中文标题搜；没有中文名就用外文名
     const initial = (game.titleCn || game.title || game.originalTitle || "").trim();
     setQuery(initial);
-    setResults(null);
+    setSource("vndb");
     setError(null);
-    if (initial) void runSearch(initial);
+    setResults(null);
+    if (initial) void runSearch("vndb", initial);
   }, [open, game, runSearch]);
 
-  const apply = async (c: VnCandidate) => {
+  const switchSource = (next: string) => {
+    if (next === source) return;
+    setSource(next);
+    void runSearch(next, query);
+  };
+
+  const apply = async (c: Candidate) => {
     setApplyingId(c.id);
     try {
-      const report = await vndbApply(game.id, c.id);
-      const parts = [`更新 ${report.updatedFields.length} 个字段`];
-      if (report.coverSaved) parts.push("封面已下载");
+      const report = await sourceApply(game.id, source, c.id);
+      const parts = [`更新 ${report.updatedFields.length} 项资料`];
+      if (report.coverSaved) parts.push("封面已保存");
       if (report.characters > 0) parts.push(`角色 ${report.characters} 位`);
       if (report.skippedLocked.length > 0)
         parts.push(`跳过已锁定 ${report.skippedLocked.length} 项`);
 
-      toast.success(`已应用《${c.titleCn || c.title}》`, { description: parts.join(" · ") });
+      toast.success(`已应用《${c.titleCn || c.title}》`, {
+        description: parts.join(" · "),
+      });
       onApplied(report.game, report);
       onOpenChange(false);
     } catch (err) {
-      console.error("[vndb_apply]", err);
-      toast.error("刮削失败", { description: String(err) });
+      console.error("[source_apply]", err);
+      toast.error("获取失败", { description: String(err) });
     } finally {
       setApplyingId(null);
     }
   };
 
+  const active = SOURCES.find((s) => s.id === source);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 p-0 sm:max-w-[680px]">
+      <DialogContent className="gap-0 p-0 sm:max-w-[700px]">
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle className="flex items-center gap-1.5 text-[15px]">
-            <Sparkles className="size-4 text-primary" />
-            从 VNDB 刮削
+            <CloudDownload className="size-4 text-primary" />
+            获取游戏资料
           </DialogTitle>
           <DialogDescription className="text-[11.5px]">
-            搜到的是候选列表，请你确认是哪一部再应用。已锁定的字段不会被覆盖。
+            从资料站查出候选，你确认是哪一部后再应用。已锁定的字段不会被覆盖。
           </DialogDescription>
         </DialogHeader>
+
+        {/* 信息源切换 */}
+        <div className="flex items-center gap-1.5 border-b border-border px-4 py-2">
+          {SOURCES.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => switchSource(s.id)}
+              title={s.hint}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-[11.5px] transition-colors duration-150",
+                source === s.id
+                  ? "bg-accent font-medium text-accent-foreground"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+          <span className="ml-auto truncate text-[10.5px] text-muted-foreground/70">
+            {active?.hint}
+          </span>
+        </div>
 
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void runSearch(query);
+              if (e.key === "Enter") void runSearch(source, query);
             }}
             placeholder="用日文原名或罗马字更容易搜到"
             className="h-8 text-[12.5px]"
@@ -116,7 +167,7 @@ export function ScrapeDialog({
             size="sm"
             className="h-8 shrink-0 gap-1.5"
             disabled={searching || !query.trim()}
-            onClick={() => void runSearch(query)}
+            onClick={() => void runSearch(source, query)}
           >
             {searching ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -131,23 +182,35 @@ export function ScrapeDialog({
           {searching ? (
             <div className="flex h-[220px] flex-col items-center justify-center gap-2 text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
-              <p className="text-[11.5px]">正在查 VNDB…</p>
+              <p className="text-[11.5px]">正在查询 {active?.label}…</p>
             </div>
           ) : error ? (
             <div className="flex h-[220px] flex-col items-center justify-center gap-2 px-6 text-center">
-              <p className="text-[12.5px] font-medium">搜索失败</p>
-              <p className="max-w-[420px] break-all text-[11px] leading-relaxed text-muted-foreground">
+              <p className="text-[12.5px] font-medium">这个源暂时连不上</p>
+              <p className="max-w-[440px] break-all text-[11px] leading-relaxed text-muted-foreground">
                 {error}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-1 h-7 gap-1.5 text-[11.5px]"
-                onClick={() => void runSearch(query)}
-              >
-                <RefreshCw className="size-3" />
-                重试
-              </Button>
+              <div className="mt-1 flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-[11.5px]"
+                  onClick={() => void runSearch(source, query)}
+                >
+                  <RefreshCw className="size-3" />
+                  重试
+                </Button>
+                {source !== "vndb" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-[11.5px]"
+                    onClick={() => switchSource("vndb")}
+                  >
+                    改用 VNDB
+                  </Button>
+                )}
+              </div>
             </div>
           ) : results && results.length === 0 ? (
             <div className="flex h-[220px] flex-col items-center justify-center gap-1 px-6 text-center">
@@ -160,7 +223,7 @@ export function ScrapeDialog({
             <ul className="space-y-1">
               {results.map((c) => (
                 <CandidateRow
-                  key={c.id}
+                  key={`${c.source}-${c.id}`}
                   c={c}
                   busy={applyingId === c.id}
                   disabled={applyingId !== null}
@@ -173,9 +236,14 @@ export function ScrapeDialog({
 
         <div className="flex items-center justify-between border-t border-border px-5 py-3">
           <p className="text-[10.5px] text-muted-foreground">
-            数据来自 VNDB（kana API），请求有节流。
+            数据来自 {active?.label}，请求有节流。
           </p>
-          <Button variant="outline" size="sm" className="h-8" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => onOpenChange(false)}
+          >
             关闭
           </Button>
         </div>
@@ -190,7 +258,7 @@ function CandidateRow({
   disabled,
   onApply,
 }: {
-  c: VnCandidate;
+  c: Candidate;
   busy: boolean;
   disabled: boolean;
   onApply: () => void;
@@ -215,7 +283,7 @@ function CandidateRow({
       <div className="min-w-0 flex-1">
         <p className="truncate text-[12.5px] font-medium text-foreground">
           {c.titleCn || c.title}
-          {c.titleCn && (
+          {c.titleCn && c.title !== c.titleCn && (
             <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
               {c.title}
             </span>

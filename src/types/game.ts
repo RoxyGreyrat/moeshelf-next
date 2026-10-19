@@ -106,7 +106,7 @@ export interface Filters {
 /**
  * 一个角色。
  *
- * 数据来自旧库刮削缓存：VNDB 提供角色名/头像/定位，Bangumi 与 cngal 补声优。
+ * 数据来自旧库缓存：VNDB 提供角色名/头像/定位，Bangumi 与 cngal 补声优。
  * `cv` 为空串表示"没收录"，不是"没有声优"。
  */
 export interface Character {

@@ -390,7 +390,7 @@ export default function App() {
         setGames((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
         setEditing(false);
         toast.success(`已保存 ${keys.length} 个字段`, {
-          description: `已写入数据库，${keys.length} 个字段已锁定，刮削不会覆盖。`,
+          description: `已写入数据库，${keys.length} 个字段已锁定，获取资料不会覆盖。`,
         });
       } catch (err) {
         console.error("[update_game]", err);
@@ -673,10 +673,10 @@ export default function App() {
           editing={editing}
           onEditingChange={setEditing}
           onToastSuccess={() =>
-            toast.success("刮削成功", { description: "VNDB 已匹配 v19273 · 樱之诗" })
+            toast.success("已获取资料", { description: "VNDB 已匹配 v19273 · 樱之诗" })
           }
           onToastError={() =>
-            toast.error("刮削失败", { description: "请求超时，请检查代理设置后重试。" })
+            toast.error("获取资料失败", { description: "请求超时，请检查网络或代理后重试。" })
           }
         />
 

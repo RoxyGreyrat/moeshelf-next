@@ -648,3 +648,45 @@ VNDB kana API：`search` 搜候选，用户点「应用」才写入。
 - 路径统一分隔符，粘进来的正斜杠会转成反斜杠；粘的是文件路径就自动跳到它所在目录
 
 因此 `tauri-plugin-dialog` 与 `pick_folder` 命令已整体移除。
+
+---
+
+## 15. 多信息源 / 封面候选 / 毛玻璃头部（2026-10-19）
+
+### 「刮削」这个词不再出现在界面上
+
+改叫 **「获取资料」**。原因：这个词是爬虫圈的内部叫法，用户看不懂，
+而且它描述的是一堆技术动作，不是用户想做的事 —— 用户想的是"帮我把这部游戏的资料补全"。
+
+### 三个信息源，统一成一个结构
+
+| 源 | 能补什么 | 备注 |
+|---|---|---|
+| **VNDB** | 标题（含官方中文名）、会社、发售日、评分、封面、**角色** | 角色最全，但没有声优 |
+| **Bangumi** | 中文名、中文简介、**角色 + 声优** | 某些网络环境连不上（连接被重置），失败时提示换源 |
+| **月幕** | 中文名、**中文简介**、会社、发售日、封面 | 接口不返回角色名单 |
+
+实现上三源共用一套 `Candidate`（`source/id/title/titleCn/altTitle/developer/released/rating/description/descriptionCn/imageUrl`），
+`commands::source_apply` 只有一条写入路径 —— 加第四个源只需要再写一个 `search` + `detail`。
+
+**中文简介只写 `cn_description`，外文简介只写 `description`**，互不覆盖。
+这条很重要：VNDB 只有英文简介，把它写进中文简介列会让详情页显示英文。
+
+### 封面候选：同名作品的各版本封面
+
+VNDB 一部作品只有一张官方封面，所谓"换一张"实际是在**不同版本 / 重制版 / 外传**之间挑
+（旧项目也是这么做的）。所以 `cover_candidates` 按标题搜一批，把封面平铺出来，
+点哪张下载哪张。当前正在用的那张会带勾选角标。
+
+### 头部毛玻璃
+
+三层叠出来的：
+
+```tsx
+<img className="scale-125 opacity-70 blur-3xl saturate-150" />   // 封面放大 + 大模糊
+<div className="bg-background/50 backdrop-blur-[3px]" />          // 半透明白 + 再加一层模糊
+<div className="bg-gradient-to-t from-background" />              // 底部渐变收口
+```
+
+白色层不能太厚也不能太薄：薄了深色封面会把文字压得看不清，厚了就看不出是"毛玻璃"。
+右侧数据卡用 `bg-card/55 + backdrop-blur-xl + ring-white/50`，和背景一起透出封面颜色。

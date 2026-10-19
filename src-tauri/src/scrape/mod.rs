@@ -1,19 +1,51 @@
 //! 网络抓取。
 //!
-//! 这里只放"怎么发请求"，不放业务规则 —— 每个数据源一个文件（现在只有 VNDB）。
+//! 结构：每个数据源一个文件，`search` / `detail` 两个入口，统一产出 [`Candidate`]。
+//! 上层（commands）不关心具体是哪个源，只按 `source` 字符串分发。
 //!
 //! 两条硬约束：
 //! 1. 全部走 `spawn_blocking`：reqwest 的阻塞客户端不能跑在 async 运行时线程上；
-//! 2. 超时给足（20s）但必须有 —— 没超时的请求会让 UI 永远停在"刮削中"。
+//! 2. 超时给足但必须有 —— 没超时的请求会让界面永远停在"查询中"。
 
+pub mod bangumi;
 pub mod vndb;
+pub mod ymgal;
 
 use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::models::Character;
+
+/// 一个候选条目。三个源的字段取并集，缺的留空 —— 前端只按这几列渲染。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    /// `vndb` / `bangumi` / `ymgal`
+    pub source: String,
+    /// 该源里的 id（v19073 / 253332 / 22374）
+    pub id: String,
+    /// 主标题（原文或罗马字）
+    pub title: String,
+    /// 中文名
+    pub title_cn: String,
+    /// 原文名（日文）
+    pub alt_title: String,
+    pub developer: String,
+    pub released: String,
+    /// 统一 0~10
+    pub rating: f64,
+    /// 外文简介（VNDB 是英文）
+    pub description: String,
+    /// 中文简介（月幕 / Bangumi 提供）
+    pub description_cn: String,
+    pub image_url: Option<String>,
+}
 
 /// 统一的 HTTP 客户端。
 ///
 /// 不显式设置代理：reqwest 默认读 `HTTP_PROXY` / `HTTPS_PROXY` 与系统代理，
-/// 用户开着梯子就能连上 VNDB，关掉就走直连。以后要做"应用内代理设置"再在这里改。
+/// 用户开着梯子就能连上，关掉就走直连。以后要做"应用内代理设置"再在这里改。
 fn client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -43,6 +75,7 @@ pub fn post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Valu
     let resp = client()?
         .post(url)
         .json(body)
+        .header("Accept", "application/json")
         .send()
         .map_err(|e| format!("请求失败：{e}"))?;
 
@@ -55,4 +88,51 @@ pub fn post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Valu
     }
 
     serde_json::from_str(&text).map_err(|e| format!("解析响应失败：{e}"))
+}
+
+/// GET 一个 JSON
+pub fn get_json(url: &str, headers: &[(&str, String)]) -> Result<serde_json::Value, String> {
+    let mut req = client()?.get(url).header("Accept", "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, v);
+    }
+    let resp = req.send().map_err(|e| format!("请求失败：{e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().map_err(|e| format!("读取响应失败：{e}"))?;
+    if !status.is_success() {
+        let snippet: String = text.chars().take(240).collect();
+        return Err(format!("服务返回 HTTP {status}：{snippet}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("解析响应失败：{e}"))
+}
+
+/// 搜候选。`source` 只接受 [`SOURCES`] 里的值。
+pub fn search(source: &str, query: &str, limit: u32) -> Result<Vec<Candidate>, String> {
+    match source {
+        "vndb" => Ok(vndb::search(query, limit)?
+            .into_iter()
+            .map(|c| c.into_candidate())
+            .collect()),
+        "bangumi" => bangumi::search(query, limit),
+        "ymgal" => ymgal::search(query, limit),
+        other => Err(format!("未知的信息源：{other}")),
+    }
+}
+
+/// 取详情（含角色）。详情里的简介通常比搜索结果完整。
+pub fn detail(source: &str, id: &str) -> Result<(Candidate, Vec<Character>), String> {
+    match source {
+        "vndb" => {
+            let vn = vndb::fetch_vn(id)?;
+            let candidate = vndb::candidate_from_vn(&vn);
+            // VNDB 要求 1 req/s：详情和角色之间歇一下
+            vndb::polite_pause();
+            let chars = vndb::fetch_characters(id, &Default::default()).unwrap_or_default();
+            Ok((candidate, chars))
+        }
+        "bangumi" => bangumi::detail(id),
+        "ymgal" => ymgal::detail(id),
+        other => Err(format!("未知的信息源：{other}")),
+    }
 }
