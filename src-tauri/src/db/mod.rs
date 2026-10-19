@@ -16,10 +16,13 @@ pub struct Db(pub Mutex<Connection>);
 
 /// 数据目录：
 /// - 开发期固定落在 `src-tauri/data/`（编译期 CARGO_MANIFEST_DIR，方便直接看库文件）
-/// - 打包后落在 `%APPDATA%\com.moeshelf.next\data\`（安装目录通常没有写权限）
+/// - **便携模式**：exe 同级的 `data/moeshelf.db` 存在 → 用它（软件放哪，数据就在哪）
+/// - 否则落在 `%APPDATA%\com.moeshelf.next\data\`（安装目录通常没有写权限）
 pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data")
+    } else if let Some(portable) = portable_data_dir() {
+        portable
     } else {
         app.path()
             .app_data_dir()
@@ -31,6 +34,20 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("无法创建数据目录 {}：{e}", dir.display()))?;
 
     Ok(dir)
+}
+
+/// 便携模式：exe 同级已经有 `data/moeshelf.db`，就不再碰 %APPDATA%。
+///
+/// 判断"存在"而不是"可写"：全新安装时 exe 旁边没有 data，仍然走用户目录；
+/// 只有把旧数据拷进去之后，才会变成便携模式。
+fn portable_data_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.join("data");
+    if dir.join("moeshelf.db").is_file() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 /// 打开指定路径的库，并按 `PRAGMA user_version` 升级 schema。

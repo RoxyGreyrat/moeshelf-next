@@ -31,3 +31,9 @@ src-tauri/data/
 
 # 构建产物
 src-tauri/target/
+
+# 交接/决策类内部文档：留在本地，不进公开仓库
+HANDOFF.md
+DECISIONS.md
+FEATURE-SYNC.md
+启动 Prompt.md
