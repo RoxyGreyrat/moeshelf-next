@@ -5,7 +5,6 @@ import {
   FolderOpen,
   Loader2,
   Pencil,
-  Play,
   CloudDownload,
   Puzzle,
   Sparkles,
@@ -26,17 +25,25 @@ import { GameEditDialog } from "@/components/detail/GameEditDialog";
 import { FetchInfoDialog } from "@/components/detail/FetchInfoDialog";
 import { DescriptionEditDialog } from "@/components/detail/DescriptionEditDialog";
 import { PatchManagerDialog } from "@/components/detail/PatchManagerDialog";
+import { LaunchControl } from "@/components/launch/LaunchControl";
 
 interface GameDetailPageProps {
   /** 要展示的游戏 id（就是 path_hash） */
   gameId: string;
   onClose: () => void;
-  onPlay: () => void;
   onOpenFolder: () => void;
 }
 
 /** 页面内容的最大宽度。窗口再宽也不无限拉长，但比原来的 1040 宽得多 */
 const PAGE = "mx-auto w-full max-w-[1680px] px-10";
+
+/** 分钟 → 「12 分钟 / 3.4 小时」 */
+function formatPlaytime(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "还没玩过";
+  if (minutes < 60) return `${Math.round(minutes)} 分钟`;
+  const h = minutes / 60;
+  return h >= 10 ? `${h.toFixed(0)} 小时` : `${h.toFixed(1)} 小时`;
+}
 
 /** 角色头像加载失败时的兜底：从名字里取一个字，配一个按名字固定的底色 */
 function CharacterFallback({ name }: { name: string }) {
@@ -157,7 +164,6 @@ function SectionHeading({
 export function GameDetailPage({
   gameId,
   onClose,
-  onPlay,
   onOpenFolder,
 }: GameDetailPageProps) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
@@ -319,10 +325,14 @@ export function GameDetailPage({
           <Pencil className="size-3.5" />
           编辑信息
         </Button>
-        <Button size="sm" onClick={onPlay} disabled={!game} className="h-8 gap-1.5">
-          <Play className="size-3.5" />
-          启动游戏
-        </Button>
+        {/* 启动：面板向下弹（顶栏上方没有空间），首次启动先确认启动程序 */}
+        {game && (
+          <LaunchControl
+            game={game}
+            placement="bottom"
+            onGameUpdated={() => refresh()}
+          />
+        )}
       </header>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -492,7 +502,24 @@ export function GameDetailPage({
                       <Fact label="体积">
                         {game.dirSize > 0 ? formatBytes(game.dirSize) : "未统计"}
                       </Fact>
+                      <Fact label="游玩时长">
+                        {detail?.playtime && detail.playtime.minutes > 0
+                          ? formatPlaytime(detail.playtime.minutes)
+                          : "还没玩过"}
+                      </Fact>
+                      <Fact label="启动次数">
+                        {detail?.playtime?.sessions ? `${detail.playtime.sessions} 次` : "—"}
+                      </Fact>
                     </div>
+
+                    {detail?.playtime?.lastPlayed && (
+                      <p className="mt-2 text-[10.5px] text-muted-foreground">
+                        上次游玩 {detail.playtime.lastPlayed.slice(0, 10)}
+                        {detail.playtime.running && (
+                          <span className="ml-2 text-primary">· 正在运行</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

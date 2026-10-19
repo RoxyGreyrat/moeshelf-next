@@ -115,6 +115,65 @@ export function onScanProgress(handler: (p: ScanProgress) => void): Promise<Unli
   return listen<ScanProgress>("scan-progress", (event) => handler(event.payload));
 }
 
+/* ---------------------------------------------------- 启动游戏 / 游玩记录 */
+
+export interface PlaytimeInfo {
+  /** 总时长（分钟，可能是小数） */
+  minutes: number;
+  /** 启动次数 */
+  sessions: number;
+  lastPlayed: string | null;
+  /** 本次应用会话内是否正在运行 */
+  running: boolean;
+  /** 已运行秒数（running 时有效，前端据此跑计时器） */
+  runningSeconds: number;
+}
+
+export interface ExeCandidate {
+  name: string;
+  path: string;
+  size: number;
+}
+
+export interface LaunchInfo {
+  gameId: string;
+  exe: string;
+  pid: number;
+}
+
+export function getPlaytime(id: string): Promise<PlaytimeInfo> {
+  return invoke<PlaytimeInfo>("get_playtime", { id });
+}
+
+/** 这个游戏目录里有哪些可启动的程序（首次启动让用户挑） */
+export function listExeCandidates(id: string): Promise<ExeCandidate[]> {
+  return invoke<ExeCandidate[]>("list_exe_candidates", { id });
+}
+
+/**
+ * 启动游戏。
+ *
+ * 传了 `exe` = 用户确认了启动项，后端会写回 `launch_exe` 并加锁（重扫不会改）。
+ * 已经在运行时会直接返回当前 pid，不会开出第二个进程。
+ */
+export function launchGame(id: string, exe?: string): Promise<LaunchInfo> {
+  return invoke<LaunchInfo>("launch_game", { id, exe: exe ?? null });
+}
+
+/** 结束游戏（连子进程一起杀） */
+export function stopGame(id: string): Promise<void> {
+  return invoke<void>("stop_game", { id });
+}
+
+/** 游戏退出事件：`{ gameId, seconds }` */
+export function onGameExited(
+  handler: (payload: { gameId: string; seconds: number }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ gameId: string; seconds: number }>("game-exited", (event) =>
+    handler(event.payload),
+  );
+}
+
 /* ---------------------------------------------------- 扫描后自动匹配资料 */
 
 /** 自动匹配的实时进度（每处理完/开始一条发一次） */
@@ -313,10 +372,11 @@ export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
 }
 
-/** 全屏详情页一次要用的数据（游戏 + 角色），避免分两次拉导致内容跳变 */
+/** 全屏详情页一次要用的数据（游戏 + 角色 + 游玩记录），避免分多次拉导致内容跳变 */
 export interface GameDetail {
   game: Game;
   characters: Character[];
+  playtime: PlaytimeInfo;
 }
 
 export function getGameDetail(id: string): Promise<GameDetail> {

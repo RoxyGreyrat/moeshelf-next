@@ -67,6 +67,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::get_game_detail,
+            commands::get_playtime,
+            commands::list_exe_candidates,
+            commands::launch_game,
+            commands::stop_game,
             commands::list_path,
             commands::set_cover_from_file,
             commands::set_cover_from_url,

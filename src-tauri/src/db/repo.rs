@@ -757,6 +757,73 @@ mod upgrade_tests {
 }
 
 #[cfg(test)]
+mod playtime_tests {
+    use super::*;
+    use crate::db::open_at;
+
+    fn temp_db(tag: &str) -> Connection {
+        let dir = std::env::temp_dir().join("moeshelf-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.db"));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        let conn = open_at(&path).expect("建库失败");
+        insert_demo_games(&conn).expect("插演示数据失败");
+        conn
+    }
+
+    #[test]
+    fn launch_counts_and_minutes_accumulate() {
+        let conn = temp_db("playtime");
+        let id = DEMO_IDS[0];
+
+        // 没玩过：没有任何行
+        assert!(get_playtime(&conn, id).unwrap().is_none());
+
+        let sid = start_session(&conn, id).unwrap();
+        mark_launched(&conn, id).unwrap();
+        finish_session(&conn, sid, 90).unwrap();
+
+        let (minutes, sessions, last) = get_playtime(&conn, id).unwrap().unwrap();
+        assert_eq!(sessions, 1, "一次启动");
+        assert!((minutes - 1.5).abs() < 1e-9, "90 秒 = 1.5 分钟，实际 {minutes}");
+        assert!(last.is_some(), "最近游玩时间要写上");
+
+        // 第二次启动：次数 +1，时长累加
+        let sid2 = start_session(&conn, id).unwrap();
+        mark_launched(&conn, id).unwrap();
+        finish_session(&conn, sid2, 30).unwrap();
+
+        let (minutes2, sessions2, _) = get_playtime(&conn, id).unwrap().unwrap();
+        assert_eq!(sessions2, 2);
+        assert!((minutes2 - 2.0).abs() < 1e-9, "1.5 + 0.5 = 2 分钟，实际 {minutes2}");
+    }
+
+    #[test]
+    fn zero_second_session_still_counts_as_launch() {
+        let conn = temp_db("playtime-zero");
+        let id = DEMO_IDS[1];
+
+        let sid = start_session(&conn, id).unwrap();
+        mark_launched(&conn, id).unwrap();
+        finish_session(&conn, sid, 0).unwrap();
+
+        let (minutes, sessions, _) = get_playtime(&conn, id).unwrap().unwrap();
+        assert_eq!(sessions, 1, "启动过就算一次");
+        assert_eq!(minutes, 0.0, "0 秒不该加时长");
+    }
+
+    #[test]
+    fn finishing_an_unknown_session_is_a_no_op() {
+        let conn = temp_db("playtime-unknown");
+        // 不该报错，也不该写出任何行
+        finish_session(&conn, 999999, 30).unwrap();
+        assert!(get_playtime(&conn, DEMO_IDS[2]).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
 mod maintenance_tests {
     use super::*;
     use crate::db::open_at;
@@ -1284,6 +1351,82 @@ pub fn set_dir_size(
          WHERE id = ?1",
         rusqlite::params![game_id, file_count, dir_size],
     )
+}
+
+/* ------------------------------------------------------------ 游玩记录 */
+
+/// 一部游戏的游玩汇总：(总分钟, 启动次数, 最近游玩 ISO)
+pub fn get_playtime(
+    conn: &Connection,
+    game_id: &str,
+) -> rusqlite::Result<Option<(f64, i64, Option<String>)>> {
+    conn.query_row(
+        "SELECT minutes, sessions, last_played FROM playtime WHERE game_hash = ?1",
+        [game_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .optional()
+}
+
+/// 开一次会话：插一行 `playtime_sessions` 并返回它的 id。
+pub fn start_session(conn: &Connection, game_id: &str) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO playtime_sessions (game_hash, started_at)
+         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+        [game_id],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 记一次启动：启动次数 +1，最近游玩时间刷新。
+///
+/// 在**进程真正起来之后**才调用 —— 启动失败不该算一次。
+pub fn mark_launched(conn: &Connection, game_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO playtime (game_hash, minutes, sessions, last_played)
+         VALUES (?1, 0, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ON CONFLICT(game_hash) DO UPDATE SET
+             sessions = sessions + 1,
+             last_played = excluded.last_played",
+        [game_id],
+    )?;
+    Ok(())
+}
+
+/// 结束一次会话：回填结束时间与秒数，并把时长累加进汇总。
+///
+/// 秒数取整；少于 5 秒的会话也照记（玩家可能只是进去看了一眼就退出来，
+/// 那也是"启动过一次"，但**时长不足以改变总时长时就不加**，避免误差累积）。
+pub fn finish_session(conn: &Connection, session_id: i64, seconds: i64) -> rusqlite::Result<()> {
+    let session = conn
+        .query_row(
+            "SELECT game_hash FROM playtime_sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    let Some(game_id) = session else {
+        return Ok(());
+    };
+
+    conn.execute(
+        "UPDATE playtime_sessions
+         SET ended_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'), seconds = ?2
+         WHERE id = ?1",
+        rusqlite::params![session_id, seconds.max(0)],
+    )?;
+
+    if seconds > 0 {
+        conn.execute(
+            "INSERT INTO playtime (game_hash, minutes, sessions, last_played)
+             VALUES (?1, ?2, 0, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+             ON CONFLICT(game_hash) DO UPDATE SET minutes = minutes + ?2",
+            rusqlite::params![game_id, seconds as f64 / 60.0],
+        )?;
+    }
+
+    Ok(())
 }
 
 /* ------------------------------------------------------------ 应用设置 */

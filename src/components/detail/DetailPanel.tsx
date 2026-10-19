@@ -33,6 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatCount } from "@/lib/format";
 import { CoverArt } from "@/components/game/CoverArt";
+import { LaunchControl } from "@/components/launch/LaunchControl";
 
 interface DetailPanelProps {
   game: Game | null;
@@ -40,11 +41,11 @@ interface DetailPanelProps {
   editing: boolean;
   /** 保存请求正在飞（按钮转圈 + 禁用，防止连点写出两次） */
   saving: boolean;
-  playing: boolean;
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onSave: (patch: Partial<Game>) => void;
-  onPlay: () => void;
+  /** 启动项确认后拿到的更新行（App 用它替换本地那一条） */
+  onGameUpdated: (g: Game) => void;
   onPatch: () => void;
   /** 忽略：只是从书架上藏起来，设置里能恢复 */
   onIgnore: () => void;
@@ -134,11 +135,10 @@ export function DetailPanel({
   multiCount,
   editing,
   saving,
-  playing,
   onStartEdit,
   onCancelEdit,
   onSave,
-  onPlay,
+  onGameUpdated,
   onPatch,
   onIgnore,
   onDelete,
@@ -500,14 +500,19 @@ export function DetailPanel({
           </div>
         ) : (
           <>
-            <Button
-              onClick={onPlay}
-              disabled={playing || multi}
-              className="h-9 w-full gap-1.5"
-            >
-              <Play className="size-4" />
-              {playing ? "启动中…" : "启动游戏"}
-            </Button>
+            {/* 启动：首次点会先让你确认启动程序（面板弹在按钮上方） */}
+            {multi ? (
+              <Button disabled className="h-9 w-full gap-1.5">
+                <Play className="size-4" />
+                启动游戏
+              </Button>
+            ) : (
+              <LaunchControl
+                game={game}
+                placement="top"
+                onGameUpdated={onGameUpdated}
+              />
+            )}
             <Button
               variant="outline"
               onClick={onPatch}

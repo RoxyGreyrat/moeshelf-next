@@ -678,6 +678,18 @@ fn rank_exes(dir: &Path, folder_name: &str) -> Vec<(String, PathBuf)> {
 
 /* -------------------------------------------------------------- 统计与组装 */
 
+/// 列出一个游戏目录里可启动的程序，按"最像主程序"排在前面（最多 10 个）。
+///
+/// 首次启动让用户手动确认时用这个：扫描器猜的主程序可能不准，
+/// 但"这个目录里有哪些 exe"是事实。过滤掉了卸载/安装器/补丁程序等明显不是主程序的。
+pub fn exe_candidates(dir: &Path) -> Vec<(String, PathBuf)> {
+    let folder_name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    rank_exes(dir, &folder_name)
+}
+
 /// 递归统计一个目录的（文件数, 总字节数）。
 ///
 /// 给"补统计体积"用：旧库没有体积列，迁移过来的条目全是 0，

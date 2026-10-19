@@ -269,6 +269,289 @@ pub fn app_info(app: AppHandle) -> Result<AppInfo, String> {
     })
 }
 
+/* ------------------------------------------------------------ 启动游戏 */
+
+/// 游戏退出事件：前端收到后刷新"正在运行"状态与时长
+pub const GAME_EXITED_EVENT: &str = "game-exited";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaytimeInfo {
+    /// 总时长（分钟）
+    pub minutes: f64,
+    /// 启动次数
+    pub sessions: i64,
+    pub last_played: Option<String>,
+    /// 本次应用会话内是否在运行
+    pub running: bool,
+    /// 已运行秒数（running 时有效，前端据此跑计时器）
+    pub running_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExeCandidateInfo {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchInfo {
+    pub game_id: String,
+    pub exe: String,
+    pub pid: u32,
+}
+
+struct RunningGame {
+    pid: u32,
+    started: Instant,
+}
+
+fn running_map(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, RunningGame>> {
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, RunningGame>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn playtime_info(db: &Db, game_id: &str) -> Result<PlaytimeInfo, String> {
+    let (minutes, sessions, last_played) = {
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        repo::get_playtime(&conn, game_id)
+            .map_err(db_err)?
+            .unwrap_or((0.0, 0, None))
+    };
+
+    let (running, running_seconds) = match running_map().lock() {
+        Ok(map) => match map.get(game_id) {
+            Some(r) => (true, r.started.elapsed().as_secs()),
+            None => (false, 0),
+        },
+        Err(_) => (false, 0),
+    };
+
+    Ok(PlaytimeInfo {
+        minutes,
+        sessions,
+        last_played,
+        running,
+        running_seconds,
+    })
+}
+
+#[tauri::command]
+pub fn get_playtime(db: State<'_, Db>, id: String) -> Result<PlaytimeInfo, String> {
+    playtime_info(db.inner(), &id)
+}
+
+/// 这个游戏目录里有哪些可启动的程序（首次启动让用户挑）。
+///
+/// 扫描器猜的主程序可能不准，但"目录里有哪些 exe"是事实。
+/// 当前记录的主程序即使不在候选里（比如在更深的子目录），也会排到第一位。
+#[tauri::command]
+pub fn list_exe_candidates(
+    db: State<'_, Db>,
+    id: String,
+) -> Result<Vec<ExeCandidateInfo>, String> {
+    let game = {
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        repo::get_one(&conn, &id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("找不到该游戏：{id}"))?
+    };
+
+    let dir = std::path::PathBuf::from(&game.folder_path);
+    if !dir.is_dir() {
+        return Err("游戏目录不存在，可能被移动或改名了".to_string());
+    }
+
+    let mut out: Vec<ExeCandidateInfo> = Vec::new();
+
+    let current = game.launch_exe.trim();
+    if !current.is_empty() {
+        let path = std::path::PathBuf::from(current);
+        if path.is_file() {
+            out.push(ExeCandidateInfo {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| current.to_string()),
+                path: current.to_string(),
+                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            });
+        }
+    }
+
+    for (name, path) in scanner::exe_candidates(&dir) {
+        let text = path.to_string_lossy().to_string();
+        if out.iter().any(|e| e.path.eq_ignore_ascii_case(&text)) {
+            continue;
+        }
+        out.push(ExeCandidateInfo {
+            name,
+            size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            path: text,
+        });
+    }
+
+    Ok(out)
+}
+
+/// 启动游戏。
+///
+/// - 已经在运行 → 直接返回当前 pid，不重复启动；
+/// - 传了 `exe` → 认为用户确认了启动项，写回 `launch_exe` **并锁定**，
+///   以后重扫不会把它改掉（也正是"首次启动需要确认、之后可以直接启动"的实现）；
+/// - 真正跑起来之后才记一次启动，并开一条会话；进程退出时回填时长。
+#[tauri::command]
+pub async fn launch_game(
+    app: AppHandle,
+    id: String,
+    exe: Option<String>,
+) -> Result<LaunchInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || run_launch(&app, &id, exe.as_deref()))
+        .await
+        .map_err(|e| format!("启动线程异常：{e}"))?
+}
+
+fn run_launch(app: &AppHandle, id: &str, exe_override: Option<&str>) -> Result<LaunchInfo, String> {
+    // 已经在运行：不重复启动（连点也不会开出第二个进程）
+    if let Ok(map) = running_map().lock() {
+        if let Some(r) = map.get(id) {
+            return Ok(LaunchInfo {
+                game_id: id.to_string(),
+                exe: String::new(),
+                pid: r.pid,
+            });
+        }
+    }
+
+    let game = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        repo::get_one(&conn, id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("找不到该游戏：{id}"))?
+    };
+
+    let chosen = exe_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let current = game.launch_exe.trim();
+            if current.is_empty() {
+                None
+            } else {
+                Some(current.to_string())
+            }
+        })
+        .ok_or_else(|| "还没有选择启动程序".to_string())?;
+
+    let exe_path = std::path::PathBuf::from(&chosen);
+    if !exe_path.is_file() {
+        return Err(format!("找不到启动程序：{chosen}"));
+    }
+
+    let dir = std::path::PathBuf::from(&game.folder_path);
+    if !dir.is_dir() {
+        return Err("游戏目录不存在，可能被移动或改名了".to_string());
+    }
+
+    // 用户确认过启动项：写回并锁定（锁了以后扫描/刮削都不会改它）
+    if exe_override.is_some() && chosen != game.launch_exe {
+        let db = app.state::<Db>();
+        if let Ok(conn) = db.0.lock() {
+            let mut patch = GamePatch::default();
+            patch.launch_exe = Some(chosen.clone());
+            let _ = repo::update_game(&conn, id, &patch, true);
+        }
+    }
+
+    let mut child = std::process::Command::new(&exe_path)
+        .current_dir(&dir)
+        .spawn()
+        .map_err(|e| format!("启动失败：{e}"))?;
+    let pid = child.id();
+
+    let session_id = {
+        let db = app.state::<Db>();
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        let sid = repo::start_session(&conn, id).map_err(db_err)?;
+        repo::mark_launched(&conn, id).map_err(db_err)?;
+        sid
+    };
+
+    if let Ok(mut map) = running_map().lock() {
+        map.insert(
+            id.to_string(),
+            RunningGame {
+                pid,
+                started: Instant::now(),
+            },
+        );
+    }
+
+    // 等进程退出（阻塞线程，不占 async 运行时）
+    let app2 = app.clone();
+    let game_id = id.to_string();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+
+        // 有些 galgame 是"启动器 → 正片"两层进程：父进程退出后，子进程可能还在。
+        // 这里不追进程树（v1 的取舍），至少把父进程的时长记准确。
+        let seconds = running_map()
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&game_id))
+            .map(|r| r.started.elapsed().as_secs())
+            .unwrap_or(0);
+
+        {
+            let db = app2.state::<Db>();
+            if let Ok(conn) = db.0.lock() {
+                let _ = repo::finish_session(&conn, session_id, seconds as i64);
+            }
+        }
+
+        let _ = app2.emit(
+            GAME_EXITED_EVENT,
+            serde_json::json!({ "gameId": game_id, "seconds": seconds }),
+        );
+    });
+
+    Ok(LaunchInfo {
+        game_id: id.to_string(),
+        exe: chosen,
+        pid,
+    })
+}
+
+/// 结束游戏（连同子进程）。
+///
+/// `/T` 是必要的：不少 galgame 由一个启动器再拉起正片，只杀父进程会留下黑屏的游戏进程。
+#[tauri::command]
+pub fn stop_game(id: String) -> Result<(), String> {
+    let pid = {
+        let map = running_map().lock().map_err(|_| "运行状态被占用".to_string())?;
+        map.get(&id).map(|r| r.pid)
+    }
+    .ok_or_else(|| "这个游戏没有在运行".to_string())?;
+
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status()
+        .map_err(|e| format!("结束进程失败：{e}"))?;
+
+    if !status.success() {
+        return Err("进程可能已经退出".to_string());
+    }
+    Ok(())
+}
+
 /* ------------------------------------------------------------ 全屏详情页 */
 
 /// 全屏详情页一次要用的全部数据。
@@ -280,16 +563,30 @@ pub fn app_info(app: AppHandle) -> Result<AppInfo, String> {
 pub struct GameDetail {
     pub game: Game,
     pub characters: Vec<crate::models::Character>,
+    /// 游玩记录：总时长 / 启动次数 / 是否正在运行。
+    /// 和游戏、角色一次返回，详情页不会出现“时长晚半秒才到”的跳变。
+    pub playtime: PlaytimeInfo,
 }
 
 #[tauri::command]
 pub fn get_game_detail(db: State<'_, Db>, id: String) -> Result<GameDetail, String> {
-    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
-    let game = repo::get_one(&conn, &id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("找不到该游戏：{id}"))?;
-    let characters = repo::list_characters(&conn, &id).map_err(db_err)?;
-    Ok(GameDetail { game, characters })
+    let (game, characters) = {
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        let game = repo::get_one(&conn, &id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("找不到该游戏：{id}"))?;
+        let characters = repo::list_characters(&conn, &id).map_err(db_err)?;
+        (game, characters)
+    };
+
+    // 注意锁要在这里之前释放：playtime_info 内部还要再取一次锁
+    let playtime = playtime_info(db.inner(), &id)?;
+
+    Ok(GameDetail {
+        game,
+        characters,
+        playtime,
+    })
 }
 
 /* ------------------------------------------------------------ 自制路径选择器 */

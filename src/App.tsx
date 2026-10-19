@@ -78,7 +78,6 @@ export default function App() {
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [playing, setPlaying] = useState(false);
   const [columns, setColumns] = useState(4);
 
   // 扫描：scanning 只控制顶栏按钮状态，scanProgress 是 Rust 每 100ms 推过来的最新进度
@@ -532,18 +531,10 @@ export default function App() {
     setPatchOpen(true);
   }, [activeGame]);
 
-  const handlePlay = useCallback(() => {
-    if (!activeGame) return;
-    const name = activeGame.titleCn;
-    setPlaying(true);
-    // 演示：模拟一次进程启动，1.4 秒后回到可点状态
-    window.setTimeout(() => {
-      setPlaying(false);
-      toast.success(`正在启动《${name}》`, {
-        description: activeGame.launchExe,
-      });
-    }, 1400);
-  }, [activeGame]);
+  /** 启动项被确认后，把更新过的那一行替换进列表（不动其它状态） */
+  const handleGameUpdated = useCallback((updated: Game) => {
+    setGames((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
+  }, []);
 
   const handleSave = useCallback(
     async (patch: Partial<Game>) => {
@@ -731,7 +722,6 @@ export default function App() {
             // 列表里那一行必须跟着更新，否则回来看到的还是旧标题、旧封面。
             void refreshGameRow(id);
           }}
-          onPlay={handlePlay}
           onOpenFolder={() => void handleOpenFolder()}
         />
       </TooltipProvider>
@@ -838,11 +828,10 @@ export default function App() {
             multiCount={selectMode === "multi" ? selectedIds.length : 1}
             editing={editing}
             saving={saving}
-            playing={playing}
             onStartEdit={() => setEditing(true)}
             onCancelEdit={() => setEditing(false)}
             onSave={handleSave}
-            onPlay={handlePlay}
+            onGameUpdated={handleGameUpdated}
             onPatch={handlePatch}
             onIgnore={handleIgnore}
             onDelete={handleDeleteRequest}

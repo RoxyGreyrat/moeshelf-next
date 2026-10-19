@@ -28,9 +28,11 @@ const PATCH_EXT = /\.(zip|7z|rar|exe|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$
 
 interface PathPickerDialogProps {
   open: boolean;
-  /** folder = 选目录；image = 选一张图片；patch = 选补丁包或补丁文件夹 */
-  mode: "folder" | "image" | "patch";
+  /** folder = 选目录；image = 选图片；patch = 选补丁包/文件夹；exe = 选启动程序 */
+  mode: "folder" | "image" | "patch" | "exe";
   title?: string;
+  /** 打开时直接进入某个目录（选启动程序时从游戏目录开始） */
+  startAt?: string | null;
   onOpenChange: (open: boolean) => void;
   onPick: (path: string) => void;
 }
@@ -51,6 +53,7 @@ export function PathPickerDialog({
   open,
   mode,
   title,
+  startAt,
   onOpenChange,
   onPick,
 }: PathPickerDialogProps) {
@@ -76,17 +79,18 @@ export function PathPickerDialog({
     }
   }, []);
 
-  // 每次打开都回到盘符列表，避免上次的目录被删了打不开
+  // 每次打开都回到盘符列表（或调用方指定的目录），避免上次的目录被删了打不开
   useEffect(() => {
     if (!open) return;
-    void load(null);
-  }, [open, load]);
+    void load(startAt ?? null);
+  }, [open, load, startAt]);
 
   const currentPath = listing?.path ?? null;
 
   const entries = (listing?.entries ?? []).filter((e) => {
     if (mode === "image") return e.isDir || IMAGE_EXT.test(e.name);
     if (mode === "patch") return e.isDir || PATCH_EXT.test(e.name);
+    if (mode === "exe") return e.isDir || /\.exe$/i.test(e.name);
     return true;
   });
 
@@ -114,14 +118,22 @@ export function PathPickerDialog({
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle className="text-[15px]">
             {title ??
-              (mode === "folder" ? "选择文件夹" : mode === "patch" ? "选择补丁" : "选择图片")}
+              (mode === "folder"
+                ? "选择文件夹"
+                : mode === "patch"
+                  ? "选择补丁"
+                  : mode === "exe"
+                    ? "选择启动程序"
+                    : "选择图片")}
           </DialogTitle>
           <DialogDescription className="text-[11.5px]">
             {mode === "folder"
               ? "进入目标文件夹后点右下角确认；这里不调用系统对话框。"
               : mode === "patch"
                 ? "选补丁包（zip / 7z / rar / tar 系）或安装器 exe；已经解压好的文件夹也可以直接确认。"
-                : "支持 jpg / png / webp / gif / bmp。"}
+                : mode === "exe"
+                  ? "进入游戏目录，选那个启动游戏的 .exe。选过之后就不用再选了。"
+                  : "支持 jpg / png / webp / gif / bmp。"}
           </DialogDescription>
         </DialogHeader>
 
@@ -212,7 +224,9 @@ export function PathPickerDialog({
                 ? `整个文件夹：${currentPath}`
                 : selectedFile
                   ? selectedFile.split(/[\\/]/).pop()
-                  : "还没有选中图片"}
+                  : mode === "exe"
+                    ? "还没有选中程序"
+                    : "还没有选中图片"}
           </p>
           <Button variant="outline" size="sm" className="h-8" onClick={() => onOpenChange(false)}>
             取消
@@ -225,7 +239,9 @@ export function PathPickerDialog({
                 ? selectedFile
                   ? "使用这个补丁"
                   : "使用这个文件夹"
-                : "使用这张图片"}
+                : mode === "exe"
+                  ? "用这个程序启动"
+                  : "使用这张图片"}
           </Button>
         </div>
       </DialogContent>
