@@ -8,14 +8,42 @@
 //! 2. 超时给足但必须有 —— 没超时的请求会让界面永远停在"查询中"。
 
 pub mod bangumi;
+pub mod probe;
 pub mod vndb;
 pub mod ymgal;
 
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::models::Character;
+
+/// `app_settings` 里存代理地址的键。空串 = 自动（系统代理 / 环境变量）。
+pub const PROXY_KEY: &str = "network.proxy";
+
+/// 当前生效的代理。启动时从库里读一次，设置页保存时改写。
+///
+/// 用全局量而不是每次请求查库：`client()` 会被封面下载、角色立绘、三个源的
+/// 每一次请求调用，查库既慢又要把连接锁来锁去。
+static PROXY: OnceLock<RwLock<String>> = OnceLock::new();
+
+fn proxy_slot() -> &'static RwLock<String> {
+    PROXY.get_or_init(|| RwLock::new(String::new()))
+}
+
+pub fn set_proxy(url: &str) {
+    if let Ok(mut slot) = proxy_slot().write() {
+        *slot = url.trim().to_string();
+    }
+}
+
+pub fn proxy() -> String {
+    proxy_slot()
+        .read()
+        .map(|slot| slot.clone())
+        .unwrap_or_default()
+}
 
 /// 一个候选条目。三个源的字段取并集，缺的留空 —— 前端只按这几列渲染。
 #[derive(Debug, Clone, Serialize)]
@@ -44,14 +72,40 @@ pub struct Candidate {
 
 /// 统一的 HTTP 客户端。
 ///
-/// 不显式设置代理：reqwest 默认读 `HTTP_PROXY` / `HTTPS_PROXY` 与系统代理，
-/// 用户开着梯子就能连上，关掉就走直连。以后要做"应用内代理设置"再在这里改。
-fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+/// 代理行为：
+/// - 用户在设置页填了地址 → 所有请求走它（此时 reqwest 不再自动叠加系统代理）；
+/// - 留空 → 保持 reqwest 的自动行为：读 `HTTPS_PROXY` 等环境变量 + 系统代理设置。
+///
+/// 为什么要给手填入口：Windows 的系统代理若是 PAC / TUN 模式，系统接口拿不到
+/// 具体的 host:port，reqwest 就只能直连 —— 表现就是"明明开着梯子，Bangumi 还是连不上"。
+fn client_with_proxy(explicit: Option<&str>) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("MoeShelfNext/0.1 (local desktop app)")
+        .user_agent("MoeShelfNext/0.1 (local desktop app)");
+
+    let target = explicit.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(url) = target {
+        let proxy = reqwest::Proxy::all(url).map_err(|e| format!("代理地址不可用：{e}"))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
         .build()
         .map_err(|e| format!("创建网络客户端失败：{e}"))
+}
+
+fn client() -> Result<reqwest::blocking::Client, String> {
+    let configured = proxy();
+    if configured.is_empty() {
+        client_with_proxy(None)
+    } else {
+        client_with_proxy(Some(&configured))
+    }
+}
+
+/// 探针用：临时指定代理，不读全局设置（用户还没点保存也能先测）。
+pub fn client_for_probe(proxy: Option<&str>) -> Result<reqwest::blocking::Client, String> {
+    client_with_proxy(proxy)
 }
 
 /// GET 一个二进制资源（封面、角色立绘）

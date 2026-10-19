@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeft,
+  CheckCircle2,
   Database,
   EyeOff,
   FolderTree,
@@ -9,31 +10,38 @@ import {
   ImageIcon,
   Info,
   Loader2,
+  Plug,
   RotateCcw,
   ScanLine,
   Trash2,
+  Wifi,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   addScanRoot,
   getAppInfo,
+  getNetworkSettings,
   listIgnoredGames,
   listScanRoots,
   openFolder,
   removeScanRoot,
   setGamesIgnored,
+  setNetworkSettings,
+  testNetwork,
 } from "@/lib/api";
-import type { AppInfo, ScanRoot } from "@/lib/api";
+import type { AppInfo, ProbeResult, ScanRoot } from "@/lib/api";
 import type { Game } from "@/types/game";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 
 /* ------------------------------------------------------------------ 类型 */
 
-type TabKey = "roots" | "ignored" | "storage" | "about";
+type TabKey = "roots" | "ignored" | "storage" | "network" | "about";
 
 interface NavItem {
   key: TabKey;
@@ -49,10 +57,9 @@ interface NavGroup {
 /**
  * 分区按「用户要办的事」划分，不按技术模块划分。
  *
- * 刻意只保留四个——每一个都有真实后端。
- * 空的「界面显示」「代理」「手机串流」这类不往导航里塞：
- * 点进去只能看到一句"还没做"，除了显得功能多没有任何用处，
- * 原版设置页的混乱正是这么来的。
+ * 五个，每一个都有真实后端：
+ * 网络与代理是为了让「获取资料」连得上 —— 用户开着梯子却连不上 Bangumi
+ * 是最常见的求助，所以它单独成一栏，而不是埋在"高级"里。
  */
 const NAV: NavGroup[] = [
   {
@@ -64,7 +71,10 @@ const NAV: NavGroup[] = [
   },
   {
     group: "数据",
-    items: [{ key: "storage", label: "存储与缓存", icon: HardDrive }],
+    items: [
+      { key: "storage", label: "存储与缓存", icon: HardDrive },
+      { key: "network", label: "网络与代理", icon: Wifi },
+    ],
   },
   {
     group: "关于",
@@ -84,6 +94,10 @@ const TAB_META: Record<TabKey, { title: string; desc: string }> = {
   storage: {
     title: "存储与缓存",
     desc: "数据库和封面缓存都在本机，不上传任何服务器。",
+  },
+  network: {
+    title: "网络与代理",
+    desc: "「获取资料」要访问 VNDB、Bangumi、月幕。国内直连 VNDB 通常不通，Bangumi 也可能被中途阻断。",
   },
   about: {
     title: "版本信息",
@@ -202,15 +216,23 @@ export function SettingsPage({
   const [adding, setAdding] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  /** 代理：输入框里的值 / 已落库的值。两者不同就是"未保存"。 */
+  const [proxy, setProxy] = useState("");
+  const [proxySaved, setProxySaved] = useState("");
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [probes, setProbes] = useState<ProbeResult[] | null>(null);
+
   // 只读一次；设置页是独立的整页，不存在「关掉再开」的缓存问题
   useEffect(() => {
     let alive = true;
 
     void (async () => {
-      const [ignoredRes, rootsRes, infoRes] = await Promise.allSettled([
+      const [ignoredRes, rootsRes, infoRes, netRes] = await Promise.allSettled([
         listIgnoredGames(),
         listScanRoots(),
         getAppInfo(),
+        getNetworkSettings(),
       ]);
       if (!alive) return;
 
@@ -225,6 +247,11 @@ export function SettingsPage({
 
       if (infoRes.status === "fulfilled") setInfo(infoRes.value);
       else console.error("[app_info]", infoRes.reason);
+
+      if (netRes.status === "fulfilled") {
+        setProxy(netRes.value.proxy);
+        setProxySaved(netRes.value.proxy);
+      } else console.error("[get_network_settings]", netRes.reason);
 
       setLoading(false);
     })();
@@ -304,6 +331,40 @@ export function SettingsPage({
     } catch (err) {
       console.error("[open_folder]", err);
       toast.error(`打不开${label}`, { description: String(err) });
+    }
+  };
+
+  /** 保存代理；空串表示回到"自动" */
+  const saveProxy = async () => {
+    setProxyBusy(true);
+    try {
+      const next = await setNetworkSettings(proxy);
+      setProxy(next.proxy);
+      setProxySaved(next.proxy);
+      setProbes(null);
+      toast.success(next.proxy ? "代理已保存" : "已改为自动检测代理", {
+        description: next.proxy || "跟随系统代理与环境变量",
+      });
+    } catch (err) {
+      console.error("[set_network_settings]", err);
+      toast.error("保存失败", { description: String(err) });
+    } finally {
+      setProxyBusy(false);
+    }
+  };
+
+  /** 测的是输入框里的值，不用先保存 */
+  const runTest = async () => {
+    setTesting(true);
+    setProbes(null);
+    try {
+      const list = await testNetwork(proxy.trim() || undefined);
+      setProbes(list);
+    } catch (err) {
+      console.error("[test_network]", err);
+      toast.error("测试失败", { description: String(err) });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -509,6 +570,105 @@ export function SettingsPage({
     </div>
   );
 
+  const renderNetwork = () => {
+    const dirty = proxy.trim() !== proxySaved;
+
+    return (
+      <div className="space-y-6">
+        <Section
+          title="代理地址"
+          hint="留空 = 自动：使用 Windows 系统代理与环境变量。如果开着代理工具仍然连不上，把它的 HTTP 端口填在这里（Clash 一般是 http://127.0.0.1:7890）。"
+        >
+          <div className="rounded-xl border border-border bg-card px-4 py-3.5">
+            <div className="flex gap-2">
+              <Input
+                value={proxy}
+                onChange={(e) => {
+                  setProxy(e.target.value);
+                  // 改了地址，之前的测试结果就不再对应当前输入，直接清掉
+                  setProbes(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && dirty && !proxyBusy) void saveProxy();
+                }}
+                placeholder="http://127.0.0.1:7890"
+                spellCheck={false}
+                autoComplete="off"
+                className="h-8 flex-1 font-mono text-[12px]"
+              />
+              <Button
+                size="sm"
+                className="h-8 shrink-0 gap-1.5"
+                disabled={!dirty || proxyBusy}
+                onClick={() => void saveProxy()}
+              >
+                {proxyBusy && <Loader2 className="size-3.5 animate-spin" />}
+                保存
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 gap-1.5"
+                disabled={testing}
+                onClick={() => void runTest()}
+              >
+                {testing ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Plug className="size-3.5" />
+                )}
+                {testing ? "测试中…" : "测试连接"}
+              </Button>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              {dirty
+                ? "有未保存的改动 —— 测试用的就是输入框里的地址。"
+                : proxySaved
+                  ? `当前：${proxySaved}`
+                  : "当前：自动检测（系统代理 / 环境变量）"}
+            </p>
+          </div>
+        </Section>
+
+        <Section
+          title="连通性"
+          hint="三个源分别检测，失败时会写明原因（超时 / 连接被拒 / 被重置）。"
+        >
+          {probes === null ? (
+            <EmptyHint>
+              点上面的「测试连接」，会依次探测 VNDB、Bangumi、月幕。
+              <br />
+              这一步会真的发请求，每个源最多等 8 秒。
+            </EmptyHint>
+          ) : (
+            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+              {probes.map((p) => (
+                <li key={p.source} className="flex items-start gap-3 px-4 py-3">
+                  {p.ok ? (
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                  ) : (
+                    <XCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12.5px] font-medium text-foreground">{p.label}</p>
+                    {!p.ok && (
+                      <p className="mt-0.5 break-all text-[11px] leading-relaxed text-muted-foreground">
+                        {p.message}
+                      </p>
+                    )}
+                  </div>
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                    {p.ms} ms
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+      </div>
+    );
+  };
+
   const renderAbout = () => (
     <div className="space-y-6">
       <Section title="版本">
@@ -552,6 +712,8 @@ export function SettingsPage({
         return renderIgnored();
       case "storage":
         return renderStorage();
+      case "network":
+        return renderNetwork();
       default:
         return renderAbout();
     }

@@ -65,6 +65,10 @@ pub fn open_at(path: &Path) -> Result<Connection, String> {
         conn.execute_batch(schema::V3_DDL)
             .map_err(|e| format!("升级失败（V3）：{e}"))?;
     }
+    if version < 4 {
+        conn.execute_batch(schema::V4_DDL)
+            .map_err(|e| format!("升级失败（V4）：{e}"))?;
+    }
 
     conn.pragma_update(None, "user_version", schema::SCHEMA_VERSION)
         .map_err(|e| format!("写入 user_version 失败：{e}"))?;

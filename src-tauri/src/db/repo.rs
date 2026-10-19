@@ -1211,3 +1211,25 @@ pub fn set_cover(
         .map_err(|e| format!("读取游戏失败：{e}"))?
         .ok_or_else(|| format!("更新后读不回来：{id}"))
 }
+
+/* ------------------------------------------------------------ 应用设置 */
+
+/// 读一条应用设置；不存在返回 `None`，不是错误。
+pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1")?;
+    let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
+    match rows.next() {
+        Some(v) => Ok(Some(v?)),
+        None => Ok(None),
+    }
+}
+
+/// 写一条应用设置（存在就覆盖）。空值也照写，读的时候按空串处理。
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}

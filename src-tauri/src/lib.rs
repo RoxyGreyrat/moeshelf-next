@@ -51,6 +51,15 @@ pub fn run() {
         .setup(|app| {
             // 数据库在窗口出现前就绪：建库 + 建表 + 写 user_version
             let database = db::init(app.handle())?;
+
+            // 上次保存的代理在第一次请求之前装进内存。
+            // 读失败不影响启动：代理为空就是"自动"，业务照常。
+            if let Ok(conn) = database.0.lock() {
+                if let Ok(Some(proxy)) = db::repo::get_setting(&conn, scrape::PROXY_KEY) {
+                    scrape::set_proxy(&proxy);
+                }
+            }
+
             app.manage(database);
             Ok(())
         })
@@ -64,6 +73,9 @@ pub fn run() {
             commands::source_search,
             commands::source_apply,
             commands::cover_candidates,
+            commands::get_network_settings,
+            commands::set_network_settings,
+            commands::test_network,
             commands::update_game,
             commands::list_ignored_games,
             commands::set_games_ignored,

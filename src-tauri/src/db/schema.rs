@@ -4,7 +4,7 @@
 //! 改动表结构时**必须**新建一版 `V2_DDL` 并把 `SCHEMA_VERSION` 加 1，
 //! 再在 `db::init` 里按 `PRAGMA user_version` 选择要执行的批次 —— 不要直接改 V1。
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub const V1_DDL: &str = r#"
 -- ---------------------------------------------------------------- games
@@ -130,4 +130,16 @@ CREATE TABLE IF NOT EXISTS characters (
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_characters_game ON characters(game_hash, sort_order);
+"#;
+
+/// V4：应用级设置（键值对）。
+///
+/// 只存"必须跨重启保留、又不属于某一条游戏"的东西，目前就一个 `network.proxy`。
+/// 不沿用旧库的 settings.json：那是一个混着 exeMap / 各种 *Map 的大 JSON，
+/// 每次改一个开关都要整份重写，冲突起来没法处理。
+pub const V4_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 "#;

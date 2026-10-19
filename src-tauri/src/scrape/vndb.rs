@@ -20,9 +20,11 @@ use super::Candidate;
 
 const API_VN: &str = "https://api.vndb.org/kana/vn";
 const API_CHAR: &str = "https://api.vndb.org/kana/character";
+const API_RELEASE: &str = "https://api.vndb.org/kana/release";
 
 const VN_FIELDS: &str = "id,title,alttitle,titles{lang,title,latin,official},image.url,released,rating,developers{name},description,tags{name,rating,spoiler,category}";
 const CHAR_FIELDS: &str = "name,original,aliases,image.url,role";
+const RELEASE_FIELDS: &str = "id,title,images{id,url,type,dims,sexual}";
 
 /// 搜索结果里的一条候选
 #[derive(Debug, Clone, Serialize)]
@@ -141,13 +143,19 @@ pub fn search(query: &str, limit: u32) -> Result<Vec<VnCandidate>, String> {
     Ok(results.iter().map(to_candidate).collect())
 }
 
+/// `17` / `v17` 都接受，统一成 `v17`
+pub fn normalize_id(id: &str) -> String {
+    let t = id.trim();
+    if t.starts_with('v') {
+        t.to_string()
+    } else {
+        format!("v{t}")
+    }
+}
+
 /// 按 id 取单条详情。`id` 形如 `v17`，也接受纯数字。
 pub fn fetch_vn(id: &str) -> Result<serde_json::Value, String> {
-    let id = if id.starts_with('v') {
-        id.to_string()
-    } else {
-        format!("v{id}")
-    };
+    let id = normalize_id(id);
 
     let body = json!({
         "filters": ["id", "=", id],
@@ -163,13 +171,115 @@ pub fn fetch_vn(id: &str) -> Result<serde_json::Value, String> {
         .ok_or_else(|| format!("VNDB 上找不到 {id}"))
 }
 
+/// 一个 release（发售版本）上的图片，就是"同一部作品的多张封面"的真实来源。
+///
+/// VNDB 的 VN 条目本身只有一张 `image`，但它的每个发售版本（初回限定、通常版、
+/// 数字版、主机移植版…）各自带自己的包装图。旧项目换封面也是在这一层挑。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseCover {
+    pub url: String,
+    pub label: String,
+    /// 中文类型：包装正面 / 数字版 / 包装内容 …
+    pub kind: String,
+}
+
+/// 图片类型 →（排序权重，中文名）。数字越小越像"封面"。
+fn kind_meta(raw: &str) -> (u8, &'static str) {
+    match raw {
+        "pkgfront" => (0, "包装正面"),
+        "dig" => (1, "数字版"),
+        "pkgcontent" => (2, "包装内容"),
+        "pkgside" => (3, "包装侧面"),
+        "pkgback" => (4, "包装背面"),
+        _ => (5, "图片"),
+    }
+}
+
+/// 取一部作品所有发售版本上的图片。
+///
+/// 会过滤掉明显的横图（`pkgback` 常是横排的封底拼接图），并做一次 URL 去重 ——
+/// 同一个封面在多个版本里重复出现是常态。`limit` 建议 20~40：再多用户也不会翻。
+pub fn fetch_release_covers(vn_id: &str, limit: u32) -> Result<Vec<ReleaseCover>, String> {
+    let id = normalize_id(vn_id);
+
+    let body = json!({
+        "filters": ["vn", "=", ["id", "=", id]],
+        "fields": RELEASE_FIELDS,
+        "results": 100,
+    });
+
+    let v = super::post_json(API_RELEASE, &body)?;
+    let releases = v
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut scored: Vec<(u8, ReleaseCover)> = Vec::new();
+
+    for rel in &releases {
+        let rel_title = value_str(rel, "title");
+        let Some(images) = rel.get("images").and_then(|i| i.as_array()) else {
+            continue;
+        };
+
+        for img in images {
+            let url = value_str(img, "url");
+            if url.is_empty() {
+                continue;
+            }
+
+            // 横图不当封面：封底拼接图、特典横幅混进竖版网格里很难看
+            let (w, h) = img
+                .get("dims")
+                .and_then(|d| d.as_array())
+                .map(|d| {
+                    (
+                        d.first().and_then(|x| x.as_u64()).unwrap_or(0),
+                        d.get(1).and_then(|x| x.as_u64()).unwrap_or(0),
+                    )
+                })
+                .unwrap_or((0, 0));
+            if w > 0 && h > 0 && w * 4 > h * 5 {
+                continue;
+            }
+
+            let (weight, kind) = kind_meta(&value_str(img, "type"));
+            let label = if rel_title.is_empty() {
+                kind.to_string()
+            } else {
+                format!("{rel_title} · {kind}")
+            };
+
+            scored.push((
+                weight,
+                ReleaseCover {
+                    url,
+                    label,
+                    kind: kind.to_string(),
+                },
+            ));
+        }
+    }
+
+    // 稳定的按类型排：同类型内保持接口顺序（同一版本的多张图不会乱跳）
+    scored.sort_by_key(|(w, _)| *w);
+
+    let mut seen = HashSet::new();
+    let list: Vec<ReleaseCover> = scored
+        .into_iter()
+        .filter(|(_, c)| seen.insert(c.url.clone()))
+        .map(|(_, c)| c)
+        .take(limit.clamp(1, 60) as usize)
+        .collect();
+
+    Ok(list)
+}
+
 /// 取一部作品的角色表（含头像，没有声优 —— VNDB 的角色接口不返回 CV）
 pub fn fetch_characters(vn_id: &str, locked: &HashSet<String>) -> Result<Vec<Character>, String> {
-    let id = if vn_id.starts_with('v') {
-        vn_id.to_string()
-    } else {
-        format!("v{vn_id}")
-    };
+    let id = normalize_id(vn_id);
 
     let body = json!({
         "filters": ["vn", "=", ["id", "=", id]],
@@ -309,5 +419,32 @@ mod tests {
         let c = to_candidate(&serde_json::json!({}));
         assert!(c.id.is_empty());
         assert_eq!(c.rating, 0.0);
+    }
+
+    #[test]
+    fn kind_meta_orders_cover_like_types() {
+        assert_eq!(kind_meta("pkgfront").0, 0);
+        assert_eq!(kind_meta("dig").0, 1);
+        assert!(kind_meta("pkgback").0 > kind_meta("pkgcontent").0);
+        assert_eq!(kind_meta("unknown-type").1, "图片");
+    }
+
+    /// 真机联网验证：千恋万花（v19073）23 个 release 一共 10 张图，
+    /// 去掉横图和重复后应该还有好几张竖版封面。
+    ///
+    /// `cargo test live_release_covers -- --ignored --nocapture`（需要能连 VNDB）
+    #[test]
+    #[ignore]
+    fn live_release_covers() {
+        let list = fetch_release_covers("v19073", 30).expect("请求 VNDB 失败");
+        for c in &list {
+            println!("{}｜{}", c.kind, c.label);
+        }
+        assert!(list.len() >= 3, "应该拿到多张封面，实际 {}", list.len());
+        assert_eq!(list[0].kind, "包装正面", "包装正面要排在第一位");
+        assert!(
+            list.iter().all(|c| c.url.starts_with("https://")),
+            "只接受 https 图床"
+        );
     }
 }

@@ -644,54 +644,206 @@ pub async fn source_apply(
 pub struct CoverOption {
     pub url: String,
     pub label: String,
+    /// 主封面 / 包装正面 / 数字版 …
+    pub kind: String,
     pub source: String,
     pub id: String,
 }
 
-/// 从 VNDB 搜同名作品，把它们各自的封面列出来让用户挑。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverCandidates {
+    pub vndb_id: String,
+    /// 条目主标题，界面上告诉用户"这些图来自哪一条"
+    pub title: String,
+    pub options: Vec<CoverOption>,
+}
+
+/// 列出**当前已关联的 VNDB 条目**自带的全部封面。
 ///
-/// VNDB 一部作品只有一张官方封面，所谓"换一张"实际是在**同一作品的不同版本/重制版**
-/// 之间挑（旧项目也是这么做的）。所以这里按标题搜一批，把封面全部列出来。
+/// 不再按标题重新搜索：搜索会混进同名的重制版、外传、甚至完全不相干的作品，
+/// 用户点一张就换错了。已关联条目的 id 在库里（`games.vndb_id`），直接读。
+///
+/// 封面来源分两层：
+/// 1. VN 自身的 `image`（主封面，界面上排第一）；
+/// 2. 该 VN 每个发售版本（release）的 `images` —— 初回限定、通常版、数字版、
+///    主机移植版各有各的包装图，这才是"一部作品不止一张封面"的真实出处。
 #[tauri::command]
 pub async fn cover_candidates(
-    query: String,
+    db: State<'_, Db>,
+    game_id: String,
     limit: Option<u32>,
-) -> Result<Vec<CoverOption>, String> {
-    let q = query.trim().to_string();
-    if q.is_empty() {
-        return Err("没有可用的搜索词".to_string());
+) -> Result<CoverCandidates, String> {
+    // 锁必须在 await 之前释放：MutexGuard 不是 Send，跨 await 持有会编译不过
+    let (vndb_id, fallback_title) = {
+        let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+        let game = repo::get_one(&conn, &game_id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("找不到该游戏：{game_id}"))?;
+        (
+            game.vndb_id.unwrap_or_default().trim().to_string(),
+            if !game.title_cn.is_empty() {
+                game.title_cn
+            } else if !game.title.is_empty() {
+                game.title
+            } else {
+                game.original_title
+            },
+        )
+    };
+
+    if vndb_id.is_empty() {
+        return Err(
+            "这部还没关联 VNDB 条目。先在「获取资料」里选一条 VNDB 结果并应用，\
+             之后这里会直接列出该条目自带的全部封面。"
+                .to_string(),
+        );
     }
 
-    let list = tauri::async_runtime::spawn_blocking(move || {
-        crate::scrape::vndb::search(&q, limit.unwrap_or(12))
+    let max = limit.unwrap_or(30).clamp(1, 60);
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<CoverCandidates, String> {
+        // 主封面
+        let vn = crate::scrape::vndb::fetch_vn(&vndb_id)?;
+        let title = {
+            let zh = crate::scrape::vndb::zh_title(&vn);
+            if zh.is_empty() {
+                let t = crate::scrape::vndb::value_str(&vn, "title");
+                if t.is_empty() { fallback_title } else { t }
+            } else {
+                zh
+            }
+        };
+
+        let mut options: Vec<CoverOption> = Vec::new();
+        if let Some(url) = vn
+            .get("image")
+            .and_then(|i| i.get("url"))
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+        {
+            options.push(CoverOption {
+                url: url.to_string(),
+                label: format!("{title} · 主封面"),
+                kind: "主封面".to_string(),
+                source: "vndb".to_string(),
+                id: vndb_id.clone(),
+            });
+        }
+
+        // VNDB 限流 1 req/s：主封面和版本图之间歇一下
+        crate::scrape::vndb::polite_pause();
+
+        // 版本图拿不到不算失败 —— 主封面已经够用了
+        let covers = crate::scrape::vndb::fetch_release_covers(&vndb_id, max).unwrap_or_default();
+        for c in covers {
+            if options.iter().any(|o| o.url == c.url) {
+                continue;
+            }
+            options.push(CoverOption {
+                url: c.url,
+                label: c.label,
+                kind: c.kind,
+                source: "vndb".to_string(),
+                id: vndb_id.clone(),
+            });
+        }
+
+        options.truncate(max as usize);
+
+        Ok(CoverCandidates {
+            vndb_id,
+            title,
+            options,
+        })
     })
     .await
-    .map_err(|e| format!("搜索线程异常：{e}"))??;
+    .map_err(|e| format!("查询线程异常：{e}"))?
+}
 
-    let mut out: Vec<CoverOption> = Vec::new();
-    for c in list {
-        let Some(url) = c.image_url else { continue };
-        if out.iter().any(|o| o.url == url) {
-            continue;
-        }
-        let year = if c.released.len() >= 4 {
-            c.released[..4].to_string()
-        } else {
-            String::new()
-        };
-        out.push(CoverOption {
-            label: format!(
-                "{}{}",
-                if c.title_cn.is_empty() { c.title.clone() } else { c.title_cn.clone() },
-                if year.is_empty() { String::new() } else { format!(" · {year}") }
-            ),
-            url,
-            source: "vndb".to_string(),
-            id: c.id,
-        });
+/* ------------------------------------------------------------ 网络与代理 */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkSettings {
+    /// 空串 = 自动（系统代理 / 环境变量）
+    pub proxy: String,
+}
+
+/// 统一代理地址：没写协议就补 `http://`，只接受 HTTP(S) 代理。
+///
+/// 不做 SOCKS：reqwest 需要额外 feature 才支持，而且 Clash / V2Ray 的
+/// 混合端口本身就是 HTTP 代理，够用。
+fn normalize_proxy(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
     }
 
-    Ok(out)
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+
+    if !(with_scheme.starts_with("http://") || with_scheme.starts_with("https://")) {
+        return Err("目前只支持 HTTP 代理，例如 http://127.0.0.1:7890".to_string());
+    }
+
+    reqwest::Proxy::all(&with_scheme).map_err(|e| format!("代理地址不可用：{e}"))?;
+    Ok(with_scheme)
+}
+
+#[tauri::command]
+pub fn get_network_settings(db: State<'_, Db>) -> Result<NetworkSettings, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let proxy = repo::get_setting(&conn, crate::scrape::PROXY_KEY)
+        .map_err(db_err)?
+        .unwrap_or_default();
+    Ok(NetworkSettings { proxy })
+}
+
+/// 保存代理。返回落库后的实际值（可能被补全了 `http://` 前缀）。
+#[tauri::command]
+pub fn set_network_settings(
+    db: State<'_, Db>,
+    proxy: String,
+) -> Result<NetworkSettings, String> {
+    let normalized = normalize_proxy(&proxy)?;
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::set_setting(&conn, crate::scrape::PROXY_KEY, &normalized).map_err(db_err)?;
+    // 立即生效：不用重启应用
+    crate::scrape::set_proxy(&normalized);
+    Ok(NetworkSettings {
+        proxy: normalized,
+    })
+}
+
+/// 用给定代理（`None` = 当前生效设置）依次探测三个源。
+///
+/// 串行而不是并发：VNDB 本身限流，并发测会让结果互相干扰；
+/// 三个源各 8 秒上限，最坏 24 秒，用户点一次能等。
+#[tauri::command]
+pub async fn test_network(proxy: Option<String>) -> Result<Vec<crate::scrape::probe::ProbeResult>, String> {
+    let target = match proxy {
+        Some(p) => Some(normalize_proxy(&p)?),
+        None => None,
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let effective = match target {
+            Some(p) => p,
+            None => crate::scrape::proxy(),
+        };
+        let arg = if effective.is_empty() {
+            None
+        } else {
+            Some(effective.as_str())
+        };
+        crate::scrape::probe::run(arg)
+    })
+    .await
+    .map_err(|e| format!("测试线程异常：{e}"))
 }
 
 #[cfg(test)]

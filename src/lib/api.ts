@@ -289,10 +289,50 @@ export function sourceApply(
 export interface CoverOption {
   url: string;
   label: string;
+  /** 主封面 / 包装正面 / 数字版 … */
+  kind: string;
   source: string;
   id: string;
 }
 
-export function coverCandidates(query: string, limit = 12): Promise<CoverOption[]> {
-  return invoke<CoverOption[]>("cover_candidates", { query, limit });
+export interface CoverCandidates {
+  /** 这批图来自哪一条 VNDB 条目 */
+  vndbId: string;
+  title: string;
+  options: CoverOption[];
+}
+
+/** 取当前已关联 VNDB 条目的全部封面（不再按标题搜索） */
+export function coverCandidates(gameId: string, limit = 30): Promise<CoverCandidates> {
+  return invoke<CoverCandidates>("cover_candidates", { gameId, limit });
+}
+
+/* ---------------------------------------------------- 网络与代理 */
+
+export interface NetworkSettings {
+  /** 空串 = 自动（系统代理 / 环境变量） */
+  proxy: string;
+}
+
+export interface ProbeResult {
+  /** vndb / bangumi / ymgal */
+  source: string;
+  label: string;
+  ok: boolean;
+  ms: number;
+  /** 失败原因，成功时为空串 */
+  message: string;
+}
+
+export function getNetworkSettings(): Promise<NetworkSettings> {
+  return invoke<NetworkSettings>("get_network_settings");
+}
+
+export function setNetworkSettings(proxy: string): Promise<NetworkSettings> {
+  return invoke<NetworkSettings>("set_network_settings", { proxy });
+}
+
+/** 测三个源的连通性；不传 proxy 就用当前生效的设置 */
+export function testNetwork(proxy?: string): Promise<ProbeResult[]> {
+  return invoke<ProbeResult[]>("test_network", { proxy: proxy ?? null });
 }
