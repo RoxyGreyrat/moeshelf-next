@@ -107,6 +107,8 @@ pub struct ScanReport {
     /// 更新了多少条（已存在的游戏只刷新扫描事实）
     pub updated: usize,
     pub elapsed_ms: u64,
+    /// 新增行的 id（= path_hash）。前端拿它去跑「自动匹配」，不用再全表比对。
+    pub inserted_ids: Vec<String>,
 }
 
 /// 扫描一个根目录，把识别出的游戏写进库。
@@ -138,9 +140,11 @@ fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
     let tx = conn.transaction().map_err(db_err)?;
     let mut inserted = 0usize;
     let mut updated = 0usize;
+    let mut inserted_ids: Vec<String> = Vec::new();
     for g in &games {
         if repo::upsert_scanned(&tx, g).map_err(db_err)? {
             inserted += 1;
+            inserted_ids.push(g.path_hash.clone());
         } else {
             updated += 1;
         }
@@ -159,6 +163,7 @@ fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
         inserted,
         updated,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        inserted_ids,
     })
 }
 
@@ -495,54 +500,33 @@ pub struct ScrapeReport {
     pub cover_saved: bool,
 }
 
-/// 把某个源上的一条记录应用到游戏。
+/// 一次"应用候选"的结果。`source_apply` 与「自动匹配」共用。
+struct ApplyResult {
+    game: Game,
+    updated: Vec<String>,
+    skipped: Vec<String>,
+    characters: usize,
+}
+
+/// 把一条候选写进库里 —— 手动「获取资料」和扫描后的「自动匹配」共用这一份规则，
+/// 不允许两套合并逻辑各自演化（否则同一个源在两条路径里会写出不同结果）。
 ///
 /// 三条规矩（三个源共用同一套）：
 /// 1. **锁定的字段一律不动**，并在报告里列出来；
 /// 2. **声优不覆盖**：VNDB / 月幕不返回 CV，旧库从 Bangumi 补过 814 条。
 ///    按角色名把旧 CV 合并回新名单，否则一次获取就清空全部声优；
 /// 3. 中文简介只写 `cn_description`，外文简介只写 `description`，互不覆盖。
-#[tauri::command]
-pub async fn source_apply(
-    app: AppHandle,
-    id: String,
-    source: String,
-    source_id: String,
-) -> Result<ScrapeReport, String> {
-    // ---------- 1. 取详情（不持锁） ----------
-    let src = source.clone();
-    let sid = source_id.clone();
-    let (candidate, chars) = tauri::async_runtime::spawn_blocking(move || {
-        crate::scrape::detail(&src, &sid)
-    })
-    .await
-    .map_err(|e| format!("获取线程异常：{e}"))??;
-
-    // ---------- 2. 下载封面（不持锁） ----------
-    let cover_url = candidate.image_url.clone().unwrap_or_default();
-    let mut cover_saved = false;
-    if !cover_url.is_empty() {
-        let app2 = app.clone();
-        let url2 = cover_url.clone();
-        cover_saved = tauri::async_runtime::spawn_blocking(move || -> bool {
-            let Ok(bytes) = crate::scrape::fetch_bytes(&url2) else {
-                return false;
-            };
-            if !crate::db::cover_cache::is_image_bytes(&bytes) {
-                return false;
-            }
-            let key = crate::db::scanner::path_hash(&url2);
-            crate::db::cover_cache::store(&app2, &key, &bytes).is_ok()
-        })
-        .await
-        .unwrap_or(false);
-    }
-
-    // ---------- 3. 写库（持锁） ----------
-    let db = app.state::<Db>();
-    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
-
-    let current = repo::get_one(&conn, &id)
+fn apply_candidate_fields(
+    conn: &rusqlite::Connection,
+    id: &str,
+    source: &str,
+    source_id: &str,
+    candidate: &crate::scrape::Candidate,
+    chars: Vec<crate::models::Character>,
+    cover_url: &str,
+    cover_saved: bool,
+) -> Result<ApplyResult, String> {
+    let current = repo::get_one(conn, id)
         .map_err(db_err)?
         .ok_or_else(|| format!("找不到该游戏：{id}"))?;
     let locked: std::collections::HashSet<String> =
@@ -584,7 +568,7 @@ pub async fn source_apply(
             skipped.push("rating".to_string());
         } else {
             patch.rating = Some(candidate.rating);
-            patch.rating_source = Some(source.clone());
+            patch.rating_source = Some(source.to_string());
             updated.push("rating".to_string());
         }
     }
@@ -594,22 +578,22 @@ pub async fn source_apply(
         if locked.contains("coverUrl") {
             skipped.push("coverUrl".to_string());
         } else {
-            patch.cover_url = Some(cover_url);
+            patch.cover_url = Some(cover_url.to_string());
             updated.push("coverUrl".to_string());
         }
     }
 
     // VNDB 的 id 单独存一列，方便下次直接定位
     if source == "vndb" {
-        patch.vndb_id = Some(source_id.clone());
+        patch.vndb_id = Some(source_id.to_string());
     }
 
-    let game = repo::update_game(&conn, &id, &patch, false)?;
+    let game = repo::update_game(conn, id, &patch, false)?;
 
     // 角色：按名字把旧声优合并回去，再整批替换
     let mut characters = 0usize;
     if !chars.is_empty() {
-        let existing = repo::list_characters(&conn, &id).unwrap_or_default();
+        let existing = repo::list_characters(conn, id).unwrap_or_default();
         let cv_by_name: std::collections::HashMap<String, (String, String)> = existing
             .iter()
             .map(|c| (c.name.clone(), (c.cv.clone(), c.cv_source.clone())))
@@ -625,16 +609,376 @@ pub async fn source_apply(
             }
         }
         characters = merged.len();
-        repo::replace_characters(&conn, &id, &merged)?;
+        repo::replace_characters(conn, id, &merged)?;
     }
 
-    Ok(ScrapeReport {
+    Ok(ApplyResult {
         game,
-        updated_fields: updated,
-        skipped_locked: skipped,
+        updated,
+        skipped,
         characters,
+    })
+}
+
+/// 下载封面并写进本地缓存（同步版，只能跑在阻塞线程里）。
+fn save_cover(app: &AppHandle, url: &str) -> bool {
+    if url.trim().is_empty() {
+        return false;
+    }
+    let Ok(bytes) = crate::scrape::fetch_bytes(url) else {
+        return false;
+    };
+    if !crate::db::cover_cache::is_image_bytes(&bytes) {
+        return false;
+    }
+    let key = crate::db::scanner::path_hash(url);
+    crate::db::cover_cache::store(app, &key, &bytes).is_ok()
+}
+
+/// 异步命令里下载封面：丢进阻塞线程，别占着 async 运行时。
+async fn download_cover(app: &AppHandle, url: &str) -> bool {
+    if url.trim().is_empty() {
+        return false;
+    }
+    let app2 = app.clone();
+    let url2 = url.to_string();
+    tauri::async_runtime::spawn_blocking(move || save_cover(&app2, &url2))
+        .await
+        .unwrap_or(false)
+}
+
+/// 把某个源上的一条记录应用到游戏（手动路径）。
+#[tauri::command]
+pub async fn source_apply(
+    app: AppHandle,
+    id: String,
+    source: String,
+    source_id: String,
+) -> Result<ScrapeReport, String> {
+    // ---------- 1. 取详情（不持锁） ----------
+    let src = source.clone();
+    let sid = source_id.clone();
+    let (candidate, chars) = tauri::async_runtime::spawn_blocking(move || {
+        crate::scrape::detail(&src, &sid)
+    })
+    .await
+    .map_err(|e| format!("获取线程异常：{e}"))??;
+
+    // ---------- 2. 下载封面（不持锁） ----------
+    let cover_url = candidate.image_url.clone().unwrap_or_default();
+    let cover_saved = download_cover(&app, &cover_url).await;
+
+    // ---------- 3. 写库（持锁） ----------
+    let db = app.state::<Db>();
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let applied = apply_candidate_fields(
+        &conn, &id, &source, &source_id, &candidate, chars, &cover_url, cover_saved,
+    )?;
+
+    Ok(ScrapeReport {
+        game: applied.game,
+        updated_fields: applied.updated,
+        skipped_locked: applied.skipped,
+        characters: applied.characters,
         cover_saved,
     })
+}
+
+/* ------------------------------------------------------------ 自动匹配（扫描后） */
+
+/// 自动匹配的写入门槛：归一化后**完全相等**才算命中（见 `scrape::title_score`）。
+///
+/// 为什么这么严：自动写入会一次改掉标题、会社、发售日、评分、封面、角色，
+/// 认错一部就是一份脏数据，用户还得逐个字段改回来。宁可漏（留给手动），不可错。
+const AUTO_MATCH_MIN_SCORE: f64 = 1.0;
+
+/// 自动匹配依次尝试的源。
+///
+/// - `vndb`：字段最全，还带中文标题和角色；
+/// - `ymgal`：中文圈条目，VNDB 没有的作品常能在这里找到；
+/// - `bangumi` **不参与**：它的搜索是模糊的（搜「王様恋愛」第一条是「王様物語」），
+///   不满足"完全相等"这个前提，硬接进来只会写错数据。
+const AUTO_MATCH_SOURCES: [&str; 2] = ["vndb", "ymgal"];
+
+/// `app_settings` 里"扫描后自动匹配"的开关
+const AUTO_MATCH_KEY: &str = "scrape.autoMatchOnImport";
+
+pub const AUTO_MATCH_PROGRESS_EVENT: &str = "auto-match-progress";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoMatchProgress {
+    pub done: usize,
+    pub total: usize,
+    pub title: String,
+    /// searching | matched | skipped | failed
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoMatchHit {
+    pub game_id: String,
+    /// 库里原来的标题（多为文件夹名）
+    pub title: String,
+    pub source: String,
+    pub source_id: String,
+    /// 匹配到的条目标题
+    pub matched_title: String,
+    pub updated_fields: Vec<String>,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoMatchMiss {
+    pub game_id: String,
+    pub title: String,
+    pub reason: String,
+    /// 最接近但没达标的条目 —— 让用户知道"要不要手动看一下这个"
+    pub closest: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoMatchReport {
+    pub matched: Vec<AutoMatchHit>,
+    pub unmatched: Vec<AutoMatchMiss>,
+    pub failed: Vec<AutoMatchMiss>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrapeSettings {
+    /// 扫描完成后，自动为新入库的游戏匹配资料（默认开）
+    pub auto_match: bool,
+}
+
+#[tauri::command]
+pub fn get_scrape_settings(db: State<'_, Db>) -> Result<ScrapeSettings, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let raw = repo::get_setting(&conn, AUTO_MATCH_KEY).map_err(db_err)?;
+    Ok(ScrapeSettings {
+        // 没写过 = 默认开
+        auto_match: raw.as_deref() != Some("0"),
+    })
+}
+
+#[tauri::command]
+pub fn set_scrape_settings(db: State<'_, Db>, auto_match: bool) -> Result<ScrapeSettings, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    repo::set_setting(&conn, AUTO_MATCH_KEY, if auto_match { "1" } else { "0" }).map_err(db_err)?;
+    Ok(ScrapeSettings { auto_match })
+}
+
+fn folder_name_of(game: &Game) -> String {
+    std::path::Path::new(&game.folder_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn display_title(game: &Game) -> String {
+    if !game.title_cn.trim().is_empty() {
+        game.title_cn.clone()
+    } else if !game.title.trim().is_empty() {
+        game.title.clone()
+    } else {
+        folder_name_of(game)
+    }
+}
+
+/// 拿什么去搜：原文名优先（VNDB 对日文原名最准），其次中文名，最后文件夹名。
+fn match_query(game: &Game) -> String {
+    let folder = folder_name_of(game);
+    for candidate in [
+        &game.original_title,
+        &game.title_cn,
+        &game.title,
+        &folder,
+    ] {
+        if !candidate.trim().is_empty() {
+            return candidate.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+enum MatchOutcome {
+    Hit(Box<AutoMatchHit>),
+    Miss(Box<AutoMatchMiss>),
+}
+
+fn emit_match_progress(app: &AppHandle, done: usize, total: usize, title: &str, status: &str) {
+    let _ = app.emit(
+        AUTO_MATCH_PROGRESS_EVENT,
+        AutoMatchProgress {
+            done,
+            total,
+            title: title.to_string(),
+            status: status.to_string(),
+        },
+    );
+}
+
+/// 给一批游戏自动匹配资料。
+///
+/// 调用时机：扫描结束后，前端把 `insertedIds` 传进来。逐条处理，
+/// 每条都会发一次 `auto-match-progress`，让界面能显示"正在匹配 3/18"。
+#[tauri::command]
+pub async fn auto_match_games(app: AppHandle, ids: Vec<String>) -> Result<AutoMatchReport, String> {
+    tauri::async_runtime::spawn_blocking(move || run_auto_match(&app, &ids))
+        .await
+        .map_err(|e| format!("匹配线程异常：{e}"))?
+}
+
+fn run_auto_match(app: &AppHandle, ids: &[String]) -> Result<AutoMatchReport, String> {
+    let total = ids.len();
+    let mut report = AutoMatchReport::default();
+
+    for (index, id) in ids.iter().enumerate() {
+        // 读一行只需要一瞬间：锁在这里拿、在这里放，绝不带进网络请求
+        let game = {
+            let db = app.state::<Db>();
+            let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+            repo::get_one(&conn, id).map_err(db_err)?
+        };
+        let Some(game) = game else {
+            continue;
+        };
+
+        let title = display_title(&game);
+        emit_match_progress(app, index, total, &title, "searching");
+
+        // 已经有人工修改过的条目不动：可能是用户刚改完，自动匹配不该覆盖他的判断
+        if !game.locked_fields.is_empty() {
+            emit_match_progress(app, index, total, &title, "skipped");
+            report.unmatched.push(AutoMatchMiss {
+                game_id: game.id.clone(),
+                title,
+                reason: "这条已经有人工修改，自动匹配不会覆盖".to_string(),
+                closest: None,
+            });
+            continue;
+        }
+
+        match match_one_game(app, &game) {
+            Ok(MatchOutcome::Hit(hit)) => {
+                emit_match_progress(app, index, total, &title, "matched");
+                report.matched.push(*hit);
+            }
+            Ok(MatchOutcome::Miss(miss)) => {
+                emit_match_progress(app, index, total, &title, "skipped");
+                report.unmatched.push(*miss);
+            }
+            Err(err) => {
+                emit_match_progress(app, index, total, &title, "failed");
+                report.failed.push(AutoMatchMiss {
+                    game_id: game.id.clone(),
+                    title,
+                    reason: err,
+                    closest: None,
+                });
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+fn match_one_game(app: &AppHandle, game: &Game) -> Result<MatchOutcome, String> {
+    let query = match_query(game);
+    if query.chars().count() < 2 {
+        return Ok(MatchOutcome::Miss(Box::new(AutoMatchMiss {
+            game_id: game.id.clone(),
+            title: display_title(game),
+            reason: "没有可用的标题".to_string(),
+            closest: None,
+        })));
+    }
+
+    let mut closest: Option<String> = None;
+    let mut errors: Vec<String> = Vec::new();
+
+    for source in AUTO_MATCH_SOURCES {
+        let candidates = match crate::scrape::search(source, &query, 6) {
+            Ok(rows) => rows,
+            Err(err) => {
+                errors.push(format!("{source} 搜索失败：{err}"));
+                continue;
+            }
+        };
+
+        let best = candidates
+            .iter()
+            .map(|c| (c, crate::scrape::title_score(&query, c)))
+            .filter(|(_, score)| *score > 0.0)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let Some((candidate, score)) = best else {
+            continue;
+        };
+
+        if score >= AUTO_MATCH_MIN_SCORE {
+            // 详情 → 封面 → 写库。三步都在阻塞线程里，顺序执行。
+            let (detail, chars) = crate::scrape::detail(source, &candidate.id)?;
+            let cover_url = detail.image_url.clone().unwrap_or_default();
+            let cover_saved = save_cover(app, &cover_url);
+
+            let applied = {
+                let db = app.state::<Db>();
+                let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+                apply_candidate_fields(
+                    &conn,
+                    &game.id,
+                    source,
+                    &candidate.id,
+                    &detail,
+                    chars,
+                    &cover_url,
+                    cover_saved,
+                )?
+            };
+
+            let matched_title = if !detail.title_cn.trim().is_empty() {
+                detail.title_cn.clone()
+            } else if !detail.title.trim().is_empty() {
+                detail.title.clone()
+            } else {
+                detail.alt_title.clone()
+            };
+
+            return Ok(MatchOutcome::Hit(Box::new(AutoMatchHit {
+                game_id: game.id.clone(),
+                title: display_title(game),
+                source: source.to_string(),
+                source_id: candidate.id.clone(),
+                matched_title,
+                updated_fields: applied.updated,
+                score,
+            })));
+        }
+
+        if closest.is_none() {
+            closest = Some(format!("{}（{:.0}% 像）", candidate.title, score * 100.0));
+        }
+    }
+
+    // 全都搜不动 = 网络问题，和"搜到了但不像"是两件事，分开报
+    if closest.is_none() && !errors.is_empty() {
+        return Err(errors.join("；"));
+    }
+
+    Ok(MatchOutcome::Miss(Box::new(AutoMatchMiss {
+        game_id: game.id.clone(),
+        title: display_title(game),
+        reason: if closest.is_some() {
+            "搜到了相似条目，但不够确定，留给你手动确认".to_string()
+        } else {
+            "没有搜到同名条目".to_string()
+        },
+        closest,
+    })))
 }
 
 /* ------------------------------------------------------------ 封面候选 */

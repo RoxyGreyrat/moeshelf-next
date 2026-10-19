@@ -2,17 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { toast } from "sonner";
 
 import {
+  autoMatchGames,
   deleteGames,
   getGameDetail,
+  getScrapeSettings,
   listGames,
   listScanRoots,
+  onAutoMatchProgress,
   onScanProgress,
   openFolder,
   scanDirectory,
   setGamesIgnored,
   updateGame,
 } from "@/lib/api";
-import type { ScanProgress, ScanRoot } from "@/lib/api";
+import type { AutoMatchProgress, ScanProgress, ScanRoot } from "@/lib/api";
 import type {
   Filters,
   Game,
@@ -25,7 +28,7 @@ import { PLATFORM_LABEL } from "@/types/game";
 
 import { TopBar } from "@/components/layout/TopBar";
 import { FilterSidebar } from "@/components/layout/FilterSidebar";
-import { ScanStatus } from "@/components/layout/ScanStatus";
+import { ScanStatus, MatchStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
 import { GameDetailPage } from "@/components/detail/GameDetailPage";
@@ -67,6 +70,8 @@ export default function App() {
   // 扫描：scanning 只控制顶栏按钮状态，scanProgress 是 Rust 每 100ms 推过来的最新进度
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+  // 扫描收尾后的自动匹配进度（"正在匹配资料 3/18"）
+  const [matchProgress, setMatchProgress] = useState<AutoMatchProgress | null>(null);
 
   // 设置面板 / 全屏详情 / 删除确认（删除是个不可撤销的动作，必须二次确认）
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -263,6 +268,41 @@ export default function App() {
   }, [detailId, settingsOpen]);
 
   /**
+   * 扫描后的自动匹配：给新入库的游戏补资料。
+   *
+   * 返回一句给人看的结果（拼进扫描完成的 Toast），失败也不影响扫描本身。
+   * 只认"标题完全相等"的匹配（后端规则），所以这里不做任何二次判断。
+   */
+  const runAutoMatch = useCallback(
+    async (ids: string[]): Promise<string> => {
+      if (ids.length === 0) return "";
+
+      setMatchProgress({ done: 0, total: ids.length, title: "", status: "searching" });
+      const unlisten = await onAutoMatchProgress(setMatchProgress);
+      try {
+        const result = await autoMatchGames(ids);
+        // 标题 / 封面 / 评分都变了，列表要重拉一次
+        if (result.matched.length > 0) await reload();
+
+        const parts: string[] = [];
+        if (result.matched.length > 0)
+          parts.push(`自动补全 ${result.matched.length} 部资料`);
+        if (result.unmatched.length > 0)
+          parts.push(`${result.unmatched.length} 部没找到确定匹配`);
+        if (result.failed.length > 0) parts.push(`${result.failed.length} 部查询失败`);
+        return parts.join(" · ");
+      } catch (err) {
+        console.error("[auto_match_games]", err);
+        return "自动匹配失败，可以稍后在游戏里手动「获取资料」";
+      } finally {
+        unlisten();
+        setMatchProgress(null);
+      }
+    },
+    [reload],
+  );
+
+  /**
    * 扫描：选目录 → 订阅进度 → Rust 扫完写库 → 重拉列表 → 报数字。
    *
    * 扫描在 Rust 侧跑在 `spawn_blocking` 里，几分钟也不能卡住界面：
@@ -292,13 +332,30 @@ export default function App() {
         // 后端会把这次扫过的目录登记进 scan_roots，这里同步一下顶栏下拉
         void loadRoots();
 
+        // 新入库的游戏接着自动匹配资料（设置里可关）。
+        // 注意必须在 finally 之前：匹配期间 scanProgress 已经清掉，状态行换成匹配进度。
+        let matchNote = "";
+        if (report.insertedIds.length > 0) {
+          try {
+            const settings = await getScrapeSettings();
+            if (settings.autoMatch) {
+              setScanProgress(null);
+              matchNote = await runAutoMatch(report.insertedIds);
+            }
+          } catch (err) {
+            console.error("[get_scrape_settings]", err);
+          }
+        }
+
         const seconds = (report.elapsedMs / 1000).toFixed(1);
         toast.success(
           report.inserted > 0
             ? `扫描完成，新增 ${report.inserted} 部`
             : "扫描完成，没有新游戏",
           {
-            description: `识别 ${report.gamesFound} 部 · 更新 ${report.updated} 部 · 看了 ${report.dirsScanned} 个文件夹 · 用时 ${seconds} 秒`,
+            description:
+              `识别 ${report.gamesFound} 部 · 更新 ${report.updated} 部 · 看了 ${report.dirsScanned} 个文件夹 · 用时 ${seconds} 秒` +
+              (matchNote ? ` · ${matchNote}` : ""),
           },
         );
       } catch (err) {
@@ -311,7 +368,7 @@ export default function App() {
         setScanProgress(null);
       }
     },
-    [loadRoots, reload, scanning],
+    [loadRoots, reload, runAutoMatch, scanning],
   );
 
   /* ------------------------------------------------------ 忽略 / 删除（库维护） */
@@ -669,9 +726,12 @@ export default function App() {
                   "加载失败"
                 )}
               </p>
-              {/* 扫描中把快捷键提示换成进度：同一行、同一位置，不遮挡封面也不让内容跳动 */}
+              {/* 扫描/匹配中把快捷键提示换成进度：同一行、同一位置，
+                  不遮挡封面也不让内容跳动。扫描结束后无缝换成匹配进度。 */}
               {scanProgress ? (
                 <ScanStatus progress={scanProgress} />
+              ) : matchProgress ? (
+                <MatchStatus progress={matchProgress} />
               ) : (
                 <p className="text-[11px] text-muted-foreground/80">
                   Ctrl K 搜索 · 方向键移动 · 双击 / Enter 打开详情 · Esc 关闭

@@ -95,6 +95,8 @@ export interface ScanReport {
   /** 库里已有、只刷新了扫描事实（路径/体积/主程序）的条数 */
   updated: number;
   elapsedMs: number;
+  /** 新增行的 id —— 扫完拿它去跑「自动匹配」，不用前端自己比对 */
+  insertedIds: string[];
 }
 
 
@@ -111,6 +113,74 @@ export function scanDirectory(root: string): Promise<ScanReport> {
 /** 订阅扫描进度。返回值是取消订阅函数，**必须**在组件卸载或扫描结束时调用。 */
 export function onScanProgress(handler: (p: ScanProgress) => void): Promise<UnlistenFn> {
   return listen<ScanProgress>("scan-progress", (event) => handler(event.payload));
+}
+
+/* ---------------------------------------------------- 扫描后自动匹配资料 */
+
+/** 自动匹配的实时进度（每处理完/开始一条发一次） */
+export interface AutoMatchProgress {
+  done: number;
+  total: number;
+  title: string;
+  /** searching | matched | skipped | failed */
+  status: string;
+}
+
+export interface AutoMatchHit {
+  gameId: string;
+  /** 库里原来的标题（多为文件夹名） */
+  title: string;
+  source: string;
+  sourceId: string;
+  matchedTitle: string;
+  updatedFields: string[];
+  score: number;
+}
+
+export interface AutoMatchMiss {
+  gameId: string;
+  title: string;
+  reason: string;
+  /** 最接近但没达标的条目，界面用来提示"要不要手动看一下" */
+  closest: string | null;
+}
+
+export interface AutoMatchReport {
+  matched: AutoMatchHit[];
+  unmatched: AutoMatchMiss[];
+  failed: AutoMatchMiss[];
+}
+
+export interface ScrapeSettings {
+  /** 扫描完成后自动为新游戏匹配资料（默认开） */
+  autoMatch: boolean;
+}
+
+/**
+ * 给一批游戏自动匹配资料。
+ *
+ * 规则（后端）：只认「标题归一化后完全相等」，宁可漏也不认错；
+ * VNDB 优先，其次月幕；已有人工修改（locked_fields 非空）的条目直接跳过。
+ */
+export function autoMatchGames(ids: string[]): Promise<AutoMatchReport> {
+  return invoke<AutoMatchReport>("auto_match_games", { ids });
+}
+
+/** 订阅自动匹配进度。扫描结束后会持续几十秒，界面要显示"匹配 3/18"。 */
+export function onAutoMatchProgress(
+  handler: (p: AutoMatchProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<AutoMatchProgress>("auto-match-progress", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function getScrapeSettings(): Promise<ScrapeSettings> {
+  return invoke<ScrapeSettings>("get_scrape_settings");
+}
+
+export function setScrapeSettings(autoMatch: boolean): Promise<ScrapeSettings> {
+  return invoke<ScrapeSettings>("set_scrape_settings", { autoMatch });
 }
 
 /* ---------------------------------------------------- C 阶段：忽略 / 删除 */

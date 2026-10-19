@@ -99,6 +99,8 @@ export function PatchManagerDialog({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [preview, setPreview] = useState<PatchPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  /** 读补丁失败的原因。以前只弹一个 Toast，弹窗里什么都不显示，看着像"点了没反应" */
+  const [previewError, setPreviewError] = useState<string | null>(null);
   /** 应用时的显示名，默认取补丁包名 */
   const [patchName, setPatchName] = useState("");
   /** 勾选"把补丁里的 exe 设为主程序" */
@@ -136,6 +138,9 @@ export function PatchManagerDialog({
 
   const choosePatch = async (path: string) => {
     setPreviewing(true);
+    setPreviewError(null);
+    // 先关掉选择器、切到"正在读取"：大压缩包解压几十秒也不会让人以为点空了
+    setPickerOpen(false);
     try {
       const next = await patchPreview(game.id, path);
       setPatchName(next.name);
@@ -153,6 +158,8 @@ export function PatchManagerDialog({
       }
     } catch (err) {
       console.error("[patch_preview]", err);
+      setPreviewError(String(err));
+      setView("list");
       toast.error("读不了这个补丁", { description: String(err) });
     } finally {
       setPreviewing(false);
@@ -259,6 +266,38 @@ export function PatchManagerDialog({
 
   const renderList = () => (
     <div className="space-y-4">
+      {/* 读取中 / 读取失败的显性反馈。
+          之前这两件事只有 Toast，弹窗里一片安静 —— 用户的原话就是"选了没有任何反应"。 */}
+      {previewing && (
+        <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[11.5px] text-accent-foreground">
+          <Loader2 className="size-3.5 shrink-0 animate-spin" />
+          正在读取补丁…（压缩包要先解压，大包可能要几十秒）
+        </div>
+      )}
+
+      {previewError && !previewing && (
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-[11.5px] text-destructive">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">这个补丁读不了</p>
+            <p className="mt-0.5 leading-relaxed break-all text-destructive/80">
+              {previewError}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 px-2 text-[11.5px]"
+              onClick={() => {
+                setPreviewError(null);
+                setPickerOpen(true);
+              }}
+            >
+              换一个补丁
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <p className="text-[11.5px] text-muted-foreground">
           {loading
@@ -398,6 +437,15 @@ export function PatchManagerDialog({
                     {c.files} 个文件 · {formatBytes(c.size)}
                   </p>
                 </div>
+                <Button
+                  size="sm"
+                  className="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                  disabled={previewing}
+                  onClick={() => void choosePatch(c.path)}
+                >
+                  <Package className="size-3" />
+                  预览
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"

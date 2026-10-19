@@ -1,7 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Loader2 } from "lucide-react";
 
-import type { ScanProgress } from "@/lib/api";
+import type { AutoMatchProgress, ScanProgress } from "@/lib/api";
 
 /**
  * 扫描进度（嵌在书架顶部那行状态文案里，占据右侧"快捷键提示"的位置）。
@@ -39,6 +39,45 @@ export function ScanStatus({ progress }: { progress: ScanProgress | null }) {
           </span>
           <span className="max-w-[260px] truncate text-muted-foreground/60">
             {progress.current ? `· ${progress.current}` : ""}
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/**
+ * 自动匹配资料的进度。
+ *
+ * 和扫描共用同一行状态位：扫描结束后紧接着跑匹配，用户看到的是同一块地方
+ * 从"正在扫描"平滑换成"正在匹配资料 3/18"，不需要再学一个新控件。
+ */
+export function MatchStatus({ progress }: { progress: AutoMatchProgress | null }) {
+  const reduce = useReducedMotion();
+
+  return (
+    <AnimatePresence mode="wait">
+      {progress && (
+        <motion.div
+          key="match-status"
+          role="status"
+          aria-live="polite"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: reduce ? 0 : 0.15 }}
+          className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground"
+        >
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          <span className="shrink-0">
+            正在匹配资料{" "}
+            <span className="font-medium tabular-nums text-foreground">
+              {Math.min(progress.done + 1, progress.total)}
+            </span>
+            <span className="text-muted-foreground/60">/{progress.total}</span>
+          </span>
+          <span className="max-w-[280px] truncate text-muted-foreground/60">
+            {progress.title}
           </span>
         </motion.div>
       )}

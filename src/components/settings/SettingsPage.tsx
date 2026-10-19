@@ -13,6 +13,7 @@ import {
   Plug,
   RotateCcw,
   ScanLine,
+  Sparkles,
   Trash2,
   Wifi,
   XCircle,
@@ -23,17 +24,20 @@ import {
   addScanRoot,
   getAppInfo,
   getNetworkSettings,
+  getScrapeSettings,
   listIgnoredGames,
   listScanRoots,
   openFolder,
   removeScanRoot,
   setGamesIgnored,
   setNetworkSettings,
+  setScrapeSettings,
   testNetwork,
 } from "@/lib/api";
 import type { AppInfo, ProbeResult, ScanRoot } from "@/lib/api";
 import type { Game } from "@/types/game";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { formatBytes, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -41,7 +45,7 @@ import { PathPickerDialog } from "@/components/common/PathPickerDialog";
 
 /* ------------------------------------------------------------------ 类型 */
 
-type TabKey = "roots" | "ignored" | "storage" | "network" | "about";
+type TabKey = "roots" | "ignored" | "storage" | "network" | "scrape" | "about";
 
 interface NavItem {
   key: TabKey;
@@ -74,6 +78,7 @@ const NAV: NavGroup[] = [
     items: [
       { key: "storage", label: "存储与缓存", icon: HardDrive },
       { key: "network", label: "网络与代理", icon: Wifi },
+      { key: "scrape", label: "刮削与匹配", icon: Sparkles },
     ],
   },
   {
@@ -98,6 +103,10 @@ const TAB_META: Record<TabKey, { title: string; desc: string }> = {
   network: {
     title: "网络与代理",
     desc: "「获取资料」要访问 VNDB、Bangumi、月幕。国内直连 VNDB 通常不通，Bangumi 也可能被中途阻断。",
+  },
+  scrape: {
+    title: "刮削与匹配",
+    desc: "扫描进来的新游戏，要不要自动去资料站补标题、会社、发售日、评分和封面。",
   },
   about: {
     title: "版本信息",
@@ -223,6 +232,10 @@ export function SettingsPage({
   const [testing, setTesting] = useState(false);
   const [probes, setProbes] = useState<ProbeResult[] | null>(null);
 
+  /** 扫描后自动匹配资料（默认开，落库在 app_settings） */
+  const [autoMatch, setAutoMatch] = useState(true);
+  const [autoMatchBusy, setAutoMatchBusy] = useState(false);
+
   // 只读一次；设置页是独立的整页，不存在「关掉再开」的缓存问题
   useEffect(() => {
     let alive = true;
@@ -235,6 +248,13 @@ export function SettingsPage({
         getNetworkSettings(),
       ]);
       if (!alive) return;
+
+      // 自动匹配开关单独读：设置页是整页，读失败就用默认值，不影响其它分区
+      void getScrapeSettings()
+        .then((s) => {
+          if (alive) setAutoMatch(s.autoMatch);
+        })
+        .catch((err) => console.error("[get_scrape_settings]", err));
 
       if (ignoredRes.status === "fulfilled") setIgnored(ignoredRes.value);
       else {
@@ -334,9 +354,26 @@ export function SettingsPage({
     }
   };
 
+  /** 切换"扫描后自动匹配"。点了立刻落库，下次扫描生效。 */
+  const toggleAutoMatch = async (next: boolean) => {
+    setAutoMatch(next);
+    setAutoMatchBusy(true);
+    try {
+      const saved = await setScrapeSettings(next);
+      setAutoMatch(saved.autoMatch);
+      toast.success(saved.autoMatch ? "扫描后会自动匹配资料" : "扫描后不再自动匹配");
+    } catch (err) {
+      console.error("[set_scrape_settings]", err);
+      // 存失败就退回去，不要让界面显示一个没生效的开关
+      setAutoMatch(!next);
+      toast.error("保存失败", { description: String(err) });
+    } finally {
+      setAutoMatchBusy(false);
+    }
+  };
+
   /** 保存代理；空串表示回到"自动" */
-  const saveProxy = async () => {
-    setProxyBusy(true);
+  const saveProxy = async () => {    setProxyBusy(true);
     try {
       const next = await setNetworkSettings(proxy);
       setProxy(next.proxy);
@@ -570,6 +607,47 @@ export function SettingsPage({
     </div>
   );
 
+  const renderScrape = () => (
+    <div className="space-y-6">
+      <Section
+        title="扫描后自动匹配"
+        hint="新扫进来的游戏会自动去 VNDB / 月幕找同名条目，补上标题、会社、发售日、评分、封面和角色。"
+      >
+        <div className="rounded-xl border border-border bg-card px-4 py-3.5">
+          <label className="flex cursor-pointer items-start gap-3">
+            <Checkbox
+              checked={autoMatch}
+              disabled={autoMatchBusy}
+              onCheckedChange={(v) => void toggleAutoMatch(v === true)}
+              className="mt-0.5"
+            />
+            <span className="min-w-0">
+              <span className="block text-[12.5px] font-medium text-foreground">
+                扫描完成后自动补全资料
+              </span>
+              <span className="mt-0.5 block text-[11.5px] leading-relaxed text-muted-foreground">
+                默认开启。匹配在后台跑，书架不会被锁住；有几部新游戏，状态行就会显示
+                「正在匹配资料 3/18」。
+              </span>
+            </span>
+          </label>
+        </div>
+      </Section>
+
+      <Section
+        title="匹配规则"
+        hint="宁可漏，不可错 —— 自动写入会一次改掉好几列，认错一部就得手工逐字段改回来。"
+      >
+        <ul className="space-y-2 rounded-xl border border-border bg-card px-4 py-3.5 text-[12px] leading-relaxed text-muted-foreground">
+          <li>只有标题完全一致才写入：先去掉「汉化版」「中文版」这类尾巴和括号内容再比。</li>
+          <li>优先 VNDB（字段最全），其次月幕；Bangumi 的搜索太模糊，不参与自动匹配。</li>
+          <li>已经人工改过（有锁定字段）的条目直接跳过，不会覆盖你填的东西。</li>
+          <li>没匹配上的不会乱猜，游戏里仍然可以手动「获取资料」。</li>
+        </ul>
+      </Section>
+    </div>
+  );
+
   const renderNetwork = () => {
     const dirty = proxy.trim() !== proxySaved;
 
@@ -714,6 +792,8 @@ export function SettingsPage({
         return renderStorage();
       case "network":
         return renderNetwork();
+      case "scrape":
+        return renderScrape();
       default:
         return renderAbout();
     }
