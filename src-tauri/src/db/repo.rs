@@ -3,7 +3,7 @@
 //! 命令层（`commands.rs`）只负责拿 `State<Db>` 和做错误转换，
 //! 真正的 SQL 写在这里 —— 这样可以用 `cargo test` 直接验证，不需要拉起窗口。
 
-use crate::models::{Game, GamePatch, GAME_COLUMNS};
+use crate::models::{Character, Game, GamePatch, GAME_COLUMNS};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
@@ -1020,5 +1020,152 @@ mod scan_root_tests {
         touch_scan_root(&conn, &dir).unwrap();
         let row = &list_scan_roots(&conn).unwrap()[0];
         assert!(row.last_scan_at.is_some(), "扫描后应写入时间戳");
+    }
+}
+
+/* ------------------------------------------------------------ 角色与声优 */
+
+/// 读取一部游戏的全部角色，按迁移时的顺序（主角/主要人物在前）。
+pub fn list_characters(conn: &Connection, game_id: &str) -> rusqlite::Result<Vec<Character>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, aliases, role, cv, cv_source, image_url, sort_order
+         FROM characters
+         WHERE game_hash = ?1
+         ORDER BY sort_order ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([game_id], |r| {
+        let aliases_json: String = r.get(1)?;
+        Ok(Character {
+            name: r.get(0)?,
+            aliases: serde_json::from_str(&aliases_json).unwrap_or_default(),
+            role: r.get(2)?,
+            cv: r.get(3)?,
+            cv_source: r.get(4)?,
+            image_url: r.get(5)?,
+            sort_order: r.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 整批替换一部游戏的角色。
+///
+/// 先删后插而不是逐条 upsert：角色没有稳定主键（VNDB 的 cid 只有 7 条有），
+/// 每次刮削拿到的是一份完整名单，整批换掉最省事，也不会留下上一版的多余角色。
+/// 调用方负责事务 —— 这里不自己开，避免嵌套。
+pub fn replace_characters(
+    conn: &Connection,
+    game_hash: &str,
+    chars: &[Character],
+) -> Result<usize, String> {
+    conn.execute("DELETE FROM characters WHERE game_hash = ?1", [game_hash])
+        .map_err(|e| format!("清理旧角色失败：{e}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO characters
+                (game_hash, name, aliases, role, cv, cv_source, image_url, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .map_err(|e| format!("准备写入角色失败：{e}"))?;
+
+    for c in chars {
+        let aliases = serde_json::to_string(&c.aliases).unwrap_or_else(|_| "[]".into());
+        stmt.execute(rusqlite::params![
+            game_hash,
+            c.name,
+            aliases,
+            c.role,
+            c.cv,
+            c.cv_source,
+            c.image_url,
+            c.sort_order,
+        ])
+        .map_err(|e| format!("写入角色 {} 失败：{e}", c.name))?;
+    }
+
+    Ok(chars.len())
+}
+
+#[cfg(test)]
+mod character_tests {
+    use super::*;
+    use crate::db::open_at;
+
+    fn temp_db(tag: &str) -> Connection {
+        let dir = std::env::temp_dir().join("moeshelf-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.db"));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        open_at(&path).expect("建库失败")
+    }
+
+    fn ch(name: &str, cv: &str, role: &str, order: i64) -> Character {
+        Character {
+            name: name.to_string(),
+            aliases: vec!["Mi-ya".to_string()],
+            role: role.to_string(),
+            cv: cv.to_string(),
+            cv_source: if cv.is_empty() { "" } else { "bangumi" }.to_string(),
+            image_url: Some("https://t.vndb.org/ch/87/62187.jpg".to_string()),
+            sort_order: order,
+        }
+    }
+
+    #[test]
+    fn replace_then_list_roundtrip() {
+        let conn = temp_db("chars-roundtrip");
+        assert_eq!(list_characters(&conn, "aaaa").unwrap().len(), 0);
+
+        let n = replace_characters(&conn, "aaaa", &[ch("九條 都", "設楽麻美", "主要人物", 0)]).unwrap();
+        assert_eq!(n, 1);
+
+        let list = list_characters(&conn, "aaaa").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "九條 都");
+        assert_eq!(list[0].cv, "設楽麻美");
+        assert_eq!(list[0].aliases, vec!["Mi-ya"]);
+        assert_eq!(list[0].role, "主要人物");
+    }
+
+    #[test]
+    fn replace_is_idempotent_and_drops_stale_rows() {
+        let conn = temp_db("chars-replace");
+        replace_characters(&conn, "bbbb", &[ch("A", "", "主角", 0), ch("B", "", "配角", 1)]).unwrap();
+        assert_eq!(list_characters(&conn, "bbbb").unwrap().len(), 2);
+
+        // 第二次刮削只拿到一个新名单：旧的两条必须消失，不能累积
+        replace_characters(&conn, "bbbb", &[ch("A", "某声优", "主角", 0)]).unwrap();
+        let list = list_characters(&conn, "bbbb").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].cv, "某声优");
+    }
+
+    #[test]
+    fn characters_are_scoped_per_game() {
+        let conn = temp_db("chars-scope");
+        replace_characters(&conn, "cccc", &[ch("A", "", "", 0)]).unwrap();
+        replace_characters(&conn, "dddd", &[ch("B", "", "", 0), ch("C", "", "", 1)]).unwrap();
+
+        assert_eq!(list_characters(&conn, "cccc").unwrap().len(), 1);
+        assert_eq!(list_characters(&conn, "dddd").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_json_is_tolerated() {
+        // 缺 cv / image / aliases 的角色不能导致整批失败
+        let raw = serde_json::json!([
+            { "name": "九條 都", "role": "主要人物", "image": "https://x/1.jpg" },
+            { "name": "", "role": "配角" },
+            { "name": "香坂 春風", "cv": "  ", "aliases": ["Empress"] }
+        ]);
+        let chars = Character::from_legacy_array(raw.as_array().unwrap());
+        assert_eq!(chars.len(), 2, "空名字应被跳过");
+        assert_eq!(chars[0].cv, "", "缺 cv 应是空串");
+        assert_eq!(chars[1].cv, "", "纯空白 cv 应被 trim 成空串");
+        assert_eq!(chars[1].aliases, vec!["Empress"]);
+        assert_eq!(chars[1].sort_order, 2, "排序保留原始下标");
     }
 }

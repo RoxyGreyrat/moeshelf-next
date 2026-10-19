@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Game } from "@/types/game";
+import type { Character, Game } from "@/types/game";
 
 /**
  * 前端与 Rust 命令层的唯一出口。
@@ -192,4 +192,14 @@ export interface AppInfo {
 
 export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
+}
+
+/** 全屏详情页一次要用的数据（游戏 + 角色），避免分两次拉导致内容跳变 */
+export interface GameDetail {
+  game: Game;
+  characters: Character[];
+}
+
+export function getGameDetail(id: string): Promise<GameDetail> {
+  return invoke<GameDetail>("get_game_detail", { id });
 }

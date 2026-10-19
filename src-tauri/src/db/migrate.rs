@@ -30,6 +30,8 @@ pub struct MigrateReport {
     pub overrides_applied: i64,
     /// 旧库没标引擎、靠目录指纹补出来的数量
     pub engines_detected: i64,
+    /// 导入的角色数（旧库刮削缓存里的 characters 数组）
+    pub characters_imported: i64,
     pub warnings: Vec<String>,
 }
 
@@ -452,6 +454,18 @@ pub fn run(target: &Connection, legacy_dir: &Path) -> Result<MigrateReport, Stri
                     .and_then(|v| v.as_i64()),                 // ?30
             ])
             .map_err(|e| format!("写入 {} 失败：{e}", g.folder_name))?;
+
+            // 角色与声优：旧库把 VNDB 抓到的角色列表连 cv（Bangumi / cngal 补的）一起存在缓存里。
+            // 整批替换，重跑迁移不会累积重复角色。
+            let chars = meta
+                .and_then(|m| m.get("characters"))
+                .and_then(|v| v.as_array())
+                .map(|arr| crate::models::Character::from_legacy_array(arr))
+                .unwrap_or_default();
+            if !chars.is_empty() {
+                let n = crate::db::repo::replace_characters(&tx, &g.path_hash, &chars)?;
+                report.characters_imported += n as i64;
+            }
 
             report.imported += 1;
         }

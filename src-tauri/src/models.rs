@@ -215,3 +215,85 @@ pub struct ScanRoot {
     pub last_scan_at: Option<String>,
     pub added_at: String,
 }
+
+/// 一个角色。
+///
+/// 数据来自旧库刮削缓存的 `characters` 数组：
+/// `{ name, aliases[], image, role, cv, cvSource }`。
+/// `role` 是旧版本地化好的中文（主角 / 主要人物 / 次要人物 / 仅出现…），
+/// 原样保留，不再翻译。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Character {
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub role: String,
+    /// 声优；没收录时是空串（不是 None —— 前端只需判断空）
+    pub cv: String,
+    /// 声优来源（bangumi / cngal / vndb），用来解释"为什么这个名字看起来不一样"
+    pub cv_source: String,
+    pub image_url: Option<String>,
+    pub sort_order: i64,
+}
+
+impl Character {
+    /// 从旧库的 JSON 数组转成结构体。
+    ///
+    /// 旧数据里 `name` 可能带空格（`九條 都`）、`cv` 可能缺失、`image` 可能不存在，
+    /// 这里一律降级成空值而不是报错 —— 迁移阶段不能因为一个角色字段缺失就整部游戏失败。
+    pub fn from_legacy_array(arr: &[serde_json::Value]) -> Vec<Character> {
+        arr.iter()
+            .enumerate()
+            .filter_map(|(i, v)| {
+                let obj = v.as_object()?;
+                let name = obj
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                if name.is_empty() {
+                    return None;
+                }
+                let aliases = obj
+                    .get("aliases")
+                    .and_then(|x| x.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|a| a.as_str())
+                            .map(|a| a.trim().to_string())
+                            .filter(|a| !a.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                Some(Character {
+                    name,
+                    aliases,
+                    role: obj
+                        .get("role")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    cv: obj
+                        .get("cv")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    cv_source: obj
+                        .get("cvSource")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    image_url: obj
+                        .get("image")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    sort_order: i as i64,
+                })
+            })
+            .collect()
+    }
+}

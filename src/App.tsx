@@ -28,6 +28,7 @@ import { FilterSidebar } from "@/components/layout/FilterSidebar";
 import { ScanStatus } from "@/components/layout/ScanStatus";
 import { GameGrid } from "@/components/game/GameGrid";
 import { DetailPanel } from "@/components/detail/DetailPanel";
+import { GameDetailPage } from "@/components/detail/GameDetailPage";
 import { DeleteGamesDialog } from "@/components/detail/DeleteGamesDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { StateSwitcher } from "@/components/debug/StateSwitcher";
@@ -65,8 +66,10 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
 
-  // 设置面板 / 删除确认（删除是个不可撤销的动作，必须二次确认）
+  // 设置面板 / 全屏详情 / 删除确认（删除是个不可撤销的动作，必须二次确认）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 全屏详情页打开的是哪一部；null = 没开 */
+  const [detailId, setDetailId] = useState<string | null>(null);
   /** 已登记的扫描根目录：顶栏扫描按钮的下拉内容 */
   const [roots, setRoots] = useState<ScanRoot[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Game[]>([]);
@@ -218,6 +221,8 @@ export default function App() {
     setCursorId(id);
     setSelectedIds([id]);
     setEditing(false);
+    // 双击 / Enter = 打开全屏详情；单击仍然只选中、右侧面板跟着换
+    setDetailId(id);
   }, []);
 
   /**
@@ -428,8 +433,8 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // 设置是整页，由它自己处理键盘；书架那套快捷键在这里必须让位
-      if (settingsOpen) return;
+      // 设置和全屏详情都是整页，由它们自己处理键盘；书架那套快捷键在这里必须让位
+      if (settingsOpen || detailId) return;
       const target = e.target as HTMLElement | null;
       const typing =
         !!target &&
@@ -509,6 +514,7 @@ export default function App() {
     selectMode,
     selectedIds.length,
     settingsOpen,
+    detailId,
   ]);
 
   /* -------------------------------------------------------------- 渲染 */
@@ -523,6 +529,24 @@ export default function App() {
           onRestored={() => void reload()}
           onRootsChanged={() => void loadRoots()}
           onScanRoot={(path) => void handleScan(path)}
+        />
+      </TooltipProvider>
+    );
+  }
+
+  // 全屏详情：双击卡片 / Enter 进入，Esc 或「返回书架」退出。书架状态原样保留。
+  if (detailId) {
+    return (
+      <TooltipProvider delayDuration={300}>
+        <GameDetailPage
+          gameId={detailId}
+          onClose={() => setDetailId(null)}
+          onPlay={handlePlay}
+          onEdit={() => {
+            setDetailId(null);
+            setEditing(true);
+          }}
+          onOpenFolder={() => void handleOpenFolder()}
         />
       </TooltipProvider>
     );
@@ -588,7 +612,7 @@ export default function App() {
                 <ScanStatus progress={scanProgress} />
               ) : (
                 <p className="text-[11px] text-muted-foreground/80">
-                  Ctrl K 搜索 · 方向键移动 · Enter 打开 · Esc 关闭
+                  Ctrl K 搜索 · 方向键移动 · 双击 / Enter 打开详情 · Esc 关闭
                 </p>
               )}
             </div>

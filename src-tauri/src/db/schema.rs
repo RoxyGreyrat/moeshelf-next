@@ -4,7 +4,7 @@
 //! 改动表结构时**必须**新建一版 `V2_DDL` 并把 `SCHEMA_VERSION` 加 1，
 //! 再在 `db::init` 里按 `PRAGMA user_version` 选择要执行的批次 —— 不要直接改 V1。
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const V1_DDL: &str = r#"
 -- ---------------------------------------------------------------- games
@@ -109,4 +109,25 @@ CREATE TABLE IF NOT EXISTS game_sources (
 /// 老数据自动填 0，不需要回填。
 pub const V2_DDL: &str = r#"
 ALTER TABLE games ADD COLUMN dir_size INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// V3：角色与声优。
+///
+/// 数据来源是旧库刮削缓存里的 `characters` 数组（VNDB 抓角色、Bangumi/cngal 补声优）：
+/// 196 部有角色、共 2208 个角色，其中 839 个带 cv。
+/// 单独建表而不是塞进 games.tags 之类的 JSON 列，因为详情页要按角色逐个渲染，
+/// 而且以后要做"按声优筛选"（一列 JSON 没法建索引）。
+pub const V3_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS characters (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_hash   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    aliases     TEXT NOT NULL DEFAULT '[]',
+    role        TEXT NOT NULL DEFAULT '',
+    cv          TEXT NOT NULL DEFAULT '',
+    cv_source   TEXT NOT NULL DEFAULT '',
+    image_url   TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_characters_game ON characters(game_hash, sort_order);
 "#;

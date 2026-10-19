@@ -102,3 +102,21 @@ export interface Filters {
   engines: Engine[];
   tags: string[];
 }
+
+/**
+ * 一个角色。
+ *
+ * 数据来自旧库刮削缓存：VNDB 提供角色名/头像/定位，Bangumi 与 cngal 补声优。
+ * `cv` 为空串表示"没收录"，不是"没有声优"。
+ */
+export interface Character {
+  name: string;
+  aliases: string[];
+  /** 主角 / 主要人物 / 次要人物 / 仅出现…（旧版已本地化） */
+  role: string;
+  cv: string;
+  /** 声优来源：bangumi / cngal / vndb */
+  cvSource: string;
+  imageUrl: string | null;
+  sortOrder: number;
+}

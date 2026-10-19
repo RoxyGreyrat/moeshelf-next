@@ -291,3 +291,26 @@ pub fn app_info(app: AppHandle) -> Result<AppInfo, String> {
         cover_count,
     })
 }
+
+/* ------------------------------------------------------------ 全屏详情页 */
+
+/// 全屏详情页一次要用的全部数据。
+///
+/// 合成一个命令而不是让前端发三次 invoke：
+/// 打开详情页时游戏、角色、时长必须同时到位，否则会出现"标题先出来、角色区晚 300ms"的跳变。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameDetail {
+    pub game: Game,
+    pub characters: Vec<crate::models::Character>,
+}
+
+#[tauri::command]
+pub fn get_game_detail(db: State<'_, Db>, id: String) -> Result<GameDetail, String> {
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    let game = repo::get_one(&conn, &id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("找不到该游戏：{id}"))?;
+    let characters = repo::list_characters(&conn, &id).map_err(db_err)?;
+    Ok(GameDetail { game, characters })
+}
