@@ -108,6 +108,7 @@ pub fn run() {
             commands::open_folder,
             commands::reveal_path,
             commands::app_info,
+            commands::backup_database,
             commands::migrate_legacy
         ])
         .run(tauri::generate_context!())

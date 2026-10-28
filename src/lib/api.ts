@@ -127,6 +127,24 @@ export function onScanProgress(handler: (p: ScanProgress) => void): Promise<Unli
   return listen<ScanProgress>("scan-progress", (event) => handler(event.payload));
 }
 
+/* ---------------------------------------------------------------- 备份 */
+
+export interface BackupReport {
+  /** 备份文件的完整路径 */
+  path: string;
+  bytes: number;
+}
+
+/**
+ * 把库备份到指定目录（文件名带时间戳）。
+ *
+ * 走 SQLite 的 `VACUUM INTO`：在只读快照上写出一份一致的副本，
+ * 不会漏掉还在 WAL 里的事务，也不需要先关闭应用。
+ */
+export function backupDatabase(destDir: string): Promise<BackupReport> {
+  return invoke<BackupReport>("backup_database", { destDir });
+}
+
 /* ---------------------------------------------------- 启动游戏 / 游玩记录 */
 
 export interface PlaytimeInfo {

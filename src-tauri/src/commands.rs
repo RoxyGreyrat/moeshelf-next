@@ -307,6 +307,109 @@ pub fn app_info(app: AppHandle) -> Result<AppInfo, String> {
     })
 }
 
+/* ------------------------------------------------------------ 数据库备份 */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupReport {
+    /// 备份文件完整路径
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// 把当前库备份到指定目录，文件名带时间戳。
+///
+/// 用 SQLite 自己的 `VACUUM INTO`：它会在一个只读快照上写出一份**完整且一致**的库，
+/// 不需要停机，也不怕 WAL 里还有没落盘的事务（直接复制 .db 文件会丢掉这部分）。
+#[tauri::command]
+pub fn backup_database(db: State<'_, Db>, dest_dir: String) -> Result<BackupReport, String> {
+    let dir = std::path::PathBuf::from(&dest_dir);
+    if !dir.is_dir() {
+        return Err(format!("目标目录不存在：{dest_dir}"));
+    }
+
+    let conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
+    write_backup(&conn, &dir)
+}
+
+/// 备份的实际动作。抽出来是为了能对着临时库写单元测试（不需要构造 AppHandle）。
+fn write_backup(
+    conn: &rusqlite::Connection,
+    dir: &std::path::Path,
+) -> Result<BackupReport, String> {
+    let stamp: String = conn
+        .query_row("SELECT strftime('%Y%m%d-%H%M%S','now','localtime')", [], |r| {
+            r.get(0)
+        })
+        .map_err(db_err)?;
+
+    let file = dir.join(format!("moeshelf-{stamp}.db"));
+    if file.exists() {
+        return Err("同一秒内已经备份过一次了，请稍后再试".to_string());
+    }
+
+    conn.execute("VACUUM INTO ?1", [file.to_string_lossy().to_string()])
+        .map_err(|e| format!("备份失败：{e}"))?;
+
+    let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+
+    Ok(BackupReport {
+        path: file.to_string_lossy().to_string(),
+        bytes,
+    })
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    /// 备份出来的文件必须是一份能打开、行数一致的库
+    /// （VACUUM INTO 的意义就在这里：不是"复制了个文件"，而是一致快照）
+    #[test]
+    fn backup_produces_a_valid_copy() {
+        let dir = std::env::temp_dir().join("moeshelf-backup-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = dir.join("source.db");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", src_path.display()));
+        }
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("moeshelf-") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+
+        let conn = crate::db::open_at(&src_path).expect("建库失败");
+        crate::db::repo::insert_demo_games(&conn).expect("插演示数据失败");
+
+        let report = write_backup(&conn, &dir).expect("备份失败");
+        assert!(std::path::Path::new(&report.path).is_file(), "备份文件应存在");
+        assert!(report.bytes > 0, "备份文件不应为空");
+
+        // 打开备份，行数必须和源库一致
+        let copy = rusqlite::Connection::open(&report.path).expect("备份文件打不开");
+        let count: i64 = copy
+            .query_row("SELECT count(*) FROM games", [], |r| r.get(0))
+            .expect("统计失败");
+        assert_eq!(
+            count as usize,
+            crate::db::repo::DEMO_IDS.len(),
+            "备份里的游戏条数应与源库一致"
+        );
+    }
+
+    #[test]
+    fn backup_rejects_missing_dir() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let missing = std::env::temp_dir().join("moeshelf-backup-not-here");
+        let _ = std::fs::remove_dir_all(&missing);
+        // 命令层会先校验目录；这里确认 write_backup 本身对不存在的目录也不会 panic
+        let err = write_backup(&conn, &missing);
+        assert!(err.is_err(), "目录不存在时应当报错");
+    }
+}
+
 /* ------------------------------------------------------------ 启动游戏 */
 
 /// 游戏退出事件：前端收到后刷新"正在运行"状态与时长

@@ -22,6 +22,7 @@ import { toast } from "sonner";
 
 import {
   addScanRoot,
+  backupDatabase,
   getAppInfo,
   getNetworkSettings,
   getScrapeSettings,
@@ -243,6 +244,11 @@ export function SettingsPage({
   const [sizeProgress, setSizeProgress] = useState<SizeProgress | null>(null);
   const [sizeNote, setSizeNote] = useState<string | null>(null);
 
+  /** 数据库备份 */
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupPickerOpen, setBackupPickerOpen] = useState(false);
+  const [backupLast, setBackupLast] = useState<string | null>(null);
+
   // 只读一次；设置页是独立的整页，不存在「关掉再开」的缓存问题
   useEffect(() => {
     let alive = true;
@@ -403,6 +409,23 @@ export function SettingsPage({
       unlisten();
       setSizeBusy(false);
       setSizeProgress(null);
+    }
+  };
+
+  /** 备份数据库：选一个目录，Rust 侧用 VACUUM INTO 写一份一致的快照 */
+  const runBackup = async (dir: string) => {
+    setBackupBusy(true);
+    try {
+      const report = await backupDatabase(dir);
+      setBackupLast(report.path);
+      toast.success("备份完成", {
+        description: `${formatBytes(report.bytes)} · ${report.path}`,
+      });
+    } catch (err) {
+      console.error("[backup_database]", err);
+      toast.error("备份失败", { description: String(err) });
+    } finally {
+      setBackupBusy(false);
     }
   };
 
@@ -681,6 +704,46 @@ export function SettingsPage({
           </p>
         </div>
       </Section>
+
+      <Section
+        title="备份"
+        hint="把当前库整份导出成带时间戳的文件。大改之前点一下，出问题能整份退回来。"
+      >
+        <div className="rounded-xl border border-border bg-card px-4 py-3.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5"
+              disabled={backupBusy}
+              onClick={() => setBackupPickerOpen(true)}
+            >
+              {backupBusy ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Database className="size-3.5" />
+              )}
+              选择位置并备份
+            </Button>
+            {backupLast && (
+              <span className="min-w-0 truncate text-[11.5px] text-muted-foreground">
+                已备份到 <span className="text-foreground/80">{backupLast}</span>
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            用 SQLite 的快照导出，备份时不用关软件，也不会因为 WAL 丢数据。
+          </p>
+        </div>
+      </Section>
+
+      <PathPickerDialog
+        open={backupPickerOpen}
+        mode="folder"
+        title="选择备份保存位置"
+        onOpenChange={setBackupPickerOpen}
+        onPick={(dir) => void runBackup(dir)}
+      />
     </div>
   );
 
