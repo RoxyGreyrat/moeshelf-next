@@ -97,6 +97,8 @@ export interface ScanReport {
   elapsedMs: number;
   /** 新增行的 id —— 扫完拿它去跑「自动匹配」，不用前端自己比对 */
   insertedIds: string[];
+  /** 是否被用户中途取消（已扫到的部分照常入库） */
+  cancelled: boolean;
 }
 
 
@@ -108,6 +110,16 @@ export interface ScanReport {
  */
 export function scanDirectory(root: string): Promise<ScanReport> {
   return invoke<ScanReport>("scan_directory", { root });
+}
+
+/**
+ * 取消正在进行的扫描。
+ *
+ * 不是"杀线程"：扫描线程每进一个目录读一次取消标记，然后收尾并把已扫到的写库。
+ * 调用之后 `scanDirectory` 会正常返回，报告里 `cancelled: true`。
+ */
+export function cancelScan(): Promise<boolean> {
+  return invoke<boolean>("cancel_scan");
 }
 
 /** 订阅扫描进度。返回值是取消订阅函数，**必须**在组件卸载或扫描结束时调用。 */

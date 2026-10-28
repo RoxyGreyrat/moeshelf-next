@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 
 import type { AutoMatchProgress, ScanProgress } from "@/lib/api";
 
@@ -8,8 +8,17 @@ import type { AutoMatchProgress, ScanProgress } from "@/lib/api";
  *
  * 为什么不做成浮层/进度条：扫描是后台任务，不该盖住封面、也不该让网格上下跳。
  * 这一行本来就常驻、不随滚动移动，把提示文案临时换成进度是最安静的做法。
+ *
+ * 取消按钮就放在旁边：扫描一本 200 部的库要几分钟，用户中途反悔时
+ * 不应该只能关程序（已扫到的部分会照常入库）。
  */
-export function ScanStatus({ progress }: { progress: ScanProgress | null }) {
+export function ScanStatus({
+  progress,
+  onCancel,
+}: {
+  progress: ScanProgress | null;
+  onCancel?: () => void;
+}) {
   const reduce = useReducedMotion();
 
   return (
@@ -40,6 +49,17 @@ export function ScanStatus({ progress }: { progress: ScanProgress | null }) {
           <span className="max-w-[260px] truncate text-muted-foreground/60">
             {progress.current ? `· ${progress.current}` : ""}
           </span>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-border bg-card px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive"
+              title="停止扫描；已经扫到的游戏会保留"
+            >
+              <X className="size-3" />
+              取消
+            </button>
+          )}
         </motion.div>
       )}
     </AnimatePresence>

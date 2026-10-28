@@ -459,7 +459,17 @@ fn deep_data_bytes(dir: &Path) -> u64 {
 ///
 /// 为什么不能无条件合并：库根下两个游戏各在自己的子目录、主程序名不同 →
 /// 三条都不满足 → 照旧下钻，避免把整库合并成一条。
+/// 不可取消的便捷版：只给单元测试用（应用里一律走 `_cancellable`）。
+#[allow(dead_code)]
 fn is_container(dir: &Path) -> bool {
+    is_container_cancellable(dir, &|| false).unwrap_or(false)
+}
+
+/// 判定"这个目录是不是一个装着好几部游戏的发行版合集"。
+///
+/// 这个判断要往下走三层、最多看 5000 个条目 —— 在 1TB 的库根目录上要跑一两秒，
+/// 所以同样接受取消信号。返回 `None` 表示"扫到一半被取消了"，调用方直接停。
+fn is_container_cancellable(dir: &Path, should_cancel: &dyn Fn() -> bool) -> Option<bool> {
     const MAX_ENTRIES: usize = 5000;
     let mut stack = vec![(dir.to_path_buf(), String::new(), 0usize)];
     let mut seen = 0usize;
@@ -469,6 +479,9 @@ fn is_container(dir: &Path) -> bool {
     let mut data_dirs: HashSet<String> = HashSet::new();
 
     while let Some((cur, rel, depth)) = stack.pop() {
+        if should_cancel() {
+            return None;
+        }
         let entries = match std::fs::read_dir(&cur) {
             Ok(e) => e,
             Err(_) => continue,
@@ -511,7 +524,7 @@ fn is_container(dir: &Path) -> bool {
     }
 
     if data_dirs.is_empty() || exes.is_empty() {
-        return false;
+        return Some(false);
     }
 
     // ---------- 第一步：结构判据 ----------
@@ -523,7 +536,7 @@ fn is_container(dir: &Path) -> bool {
         same_dir || (same_base && exes.iter().all(|(_, d)| is_part_dir(d)))
     };
     if !structurally_container {
-        return false;
+        return Some(false);
     }
 
     // ---------- 第二步：程序与数据是否被"拆在两个地方" ----------
@@ -536,18 +549,18 @@ fn is_container(dir: &Path) -> bool {
 
     // 程序和数据在完全相同的一批目录里：只有 `bin/` 这种"只放程序"的目录才把父目录当容器
     if exe_dirs == data_dirs {
-        return exe_dirs.iter().all(|d| is_program_dir(d));
+        return Some(exe_dirs.iter().all(|d| is_program_dir(d)));
     }
 
     let exe_tops: HashSet<&str> = exe_dirs.iter().map(|d| top_segment(d)).collect();
     let data_tops: HashSet<&str> = data_dirs.iter().map(|d| top_segment(d)).collect();
     if exe_tops.iter().any(|t| data_tops.contains(t)) {
         // 例：exe 在 `作品/`，数据在 `作品/data/` → 顶层段都是 `作品` → 不是容器
-        return false;
+        return Some(false);
     }
 
     // 例：exe 在 `bin/`，数据在 `data/` → 两个不同的顶层段 → 确实是"被拆开的游戏"
-    true
+    Some(true)
 }
 
 /// 相对路径的顶层段：`bin/` → `bin`，`game/bin` → `game`，`` → ``
@@ -567,7 +580,12 @@ fn is_program_dir(dir: &str) -> bool {
 
 /* ------------------------------------------------------------ 启动候选排序 */
 
-fn collect_exes(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_exes(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+    should_cancel: &dyn Fn() -> bool,
+) {
     if depth > MAX_DEPTH || out.len() >= MAX_EXES {
         return;
     }
@@ -576,7 +594,9 @@ fn collect_exes(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         Err(_) => return,
     };
     for entry in entries.flatten() {
-        if out.len() >= MAX_EXES {
+        // 一棵 212 部游戏的目录树可能有上万个文件夹，找 exe 也是"慢操作"，
+        // 取消不能只等 dir_stats 那一步
+        if should_cancel() || out.len() >= MAX_EXES {
             return;
         }
         let ft = match entry.file_type() {
@@ -590,7 +610,7 @@ fn collect_exes(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             if lower.starts_with('.') || is_skip_dir(&lower) || is_patchy_dir(&lower) {
                 continue;
             }
-            collect_exes(&entry.path(), depth + 1, out);
+            collect_exes(&entry.path(), depth + 1, out, should_cancel);
         } else if ft.is_file() {
             let (ext, base) = split_ext(&lower);
             if (ext == ".exe" || ext == ".bat" || ext == ".cmd") && !is_junk_exe(base) {
@@ -647,8 +667,16 @@ fn normalize(s: &str) -> String {
 
 /// 过滤 + 排序启动候选，最多 10 个
 fn rank_exes(dir: &Path, folder_name: &str) -> Vec<(String, PathBuf)> {
+    rank_exes_cancellable(dir, folder_name, &|| false)
+}
+
+fn rank_exes_cancellable(
+    dir: &Path,
+    folder_name: &str,
+    should_cancel: &dyn Fn() -> bool,
+) -> Vec<(String, PathBuf)> {
     let mut raw = Vec::new();
-    collect_exes(dir, 0, &mut raw);
+    collect_exes(dir, 0, &mut raw, should_cancel);
 
     let query = normalize(folder_name);
     let mut scored: Vec<(usize, usize, usize, String, PathBuf)> = raw
@@ -700,18 +728,32 @@ pub fn measure_dir(dir: &Path) -> (i64, u64) {
 
 /// 递归统计（文件数, 总字节数）。到上限就停，避免指到盘符根时卡死。
 fn dir_stats(dir: &Path) -> (i64, u64) {
+    let (count, bytes, _) = dir_stats_cancellable(dir, &|| false);
+    (count, bytes)
+}
+
+/// 可取消的递归统计。
+///
+/// 单部游戏动辄几个 GB、上万个文件，一次 `dir_stats` 能跑好几秒 ——
+/// 只按"目录"检查取消的话，用户点了取消还要再等这么久。
+/// 所以这里每读完一个目录也检查一次，返回 `(文件数, 字节数, 是否被取消)`。
+/// 被取消时返回的是**部分统计**，调用方据此决定要不要写库。
+fn dir_stats_cancellable(dir: &Path, should_cancel: &dyn Fn() -> bool) -> (i64, u64, bool) {
     let mut count: i64 = 0;
     let mut bytes: u64 = 0;
     let mut stack = vec![dir.to_path_buf()];
 
     while let Some(cur) = stack.pop() {
+        if should_cancel() {
+            return (count, bytes, true);
+        }
         let entries = match std::fs::read_dir(&cur) {
             Ok(e) => e,
             Err(_) => continue,
         };
         for entry in entries.flatten() {
             if count as usize >= STATS_MAX_FILES {
-                return (count, bytes);
+                return (count, bytes, false);
             }
             let ft = match entry.file_type() {
                 Ok(t) => t,
@@ -728,7 +770,7 @@ fn dir_stats(dir: &Path) -> (i64, u64) {
             }
         }
     }
-    (count, bytes)
+    (count, bytes, false)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -753,14 +795,18 @@ pub struct ScannedGame {
     pub match_score: i64,
 }
 
-fn make_game(dir: &Path, score: i64) -> ScannedGame {
+fn make_game(
+    dir: &Path,
+    score: i64,
+    should_cancel: &dyn Fn() -> bool,
+) -> (ScannedGame, bool) {
     let folder_path = dir.to_string_lossy().to_string();
     let folder_name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| folder_path.clone());
 
-    let candidates = rank_exes(dir, &folder_name);
+    let candidates = rank_exes_cancellable(dir, &folder_name, should_cancel);
     let best_exe = candidates.first().map(|(_, p)| p.clone());
 
     // 引擎：先看目录指纹（更准，会扫两层），认不出来再读主程序特征串
@@ -775,27 +821,48 @@ fn make_game(dir: &Path, score: i64) -> ScannedGame {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    let (file_count, dir_size) = dir_stats(dir);
-
-    ScannedGame {
-        path_hash: path_hash(&folder_path),
-        folder_path,
-        folder_name,
-        engine,
-        launch_exe: best_exe
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        launch_candidates: candidates
-            .into_iter()
-            .map(|(name, path)| ExeCandidate {
-                name,
-                path: path.to_string_lossy().to_string(),
-            })
-            .collect(),
-        file_count,
-        dir_size,
-        match_score: score,
+    // 体积统计是最慢的一步（递归整棵目录），取消在这里必须能打断
+    let (file_count, dir_size, aborted) = dir_stats_cancellable(dir, should_cancel);
+    if aborted {
+        // 半截的体积比"没统计"更糟：宁可这一部不写，也不要把 30% 的目录大小当真实值
+        return (
+            ScannedGame {
+                path_hash: path_hash(&folder_path),
+                folder_path,
+                folder_name,
+                engine,
+                launch_exe: String::new(),
+                launch_candidates: Vec::new(),
+                file_count: 0,
+                dir_size: 0,
+                match_score: score,
+            },
+            true,
+        );
     }
+
+    (
+        ScannedGame {
+            path_hash: path_hash(&folder_path),
+            folder_path,
+            folder_name,
+            engine,
+            launch_exe: best_exe
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            launch_candidates: candidates
+                .into_iter()
+                .map(|(name, path)| ExeCandidate {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                })
+                .collect(),
+            file_count,
+            dir_size,
+            match_score: score,
+        },
+        false,
+    )
 }
 
 /* ------------------------------------------------------------------ 进度 */
@@ -818,7 +885,27 @@ pub struct ScanProgress {
 /// 之所以不"每扫到一个目录就发一次"：一本 200 部的库轻松有上万个目录，
 /// 上万个 IPC 事件会把 webview 的消息队列打满，进度条反而卡住。
 /// 节流后前端看到的是"每 100ms 一帧"，视觉上更顺。
-pub fn scan_root<F>(root: &Path, mut on_progress: F) -> Result<Vec<ScannedGame>, String>
+/// 扫描入口（不可取消的便捷版）。
+///
+/// 应用里走的是 [`scan_root_cancellable`]；这个只给单元测试和"不需要取消"的调用方用，
+/// 所以库编译时会报 dead_code —— 保留它是为了测试读起来干净。
+#[allow(dead_code)]
+pub fn scan_root<F>(root: &Path, on_progress: F) -> Result<Vec<ScannedGame>, String>
+where
+    F: FnMut(&ScanProgress),
+{
+    scan_root_cancellable(root, on_progress, &|| false).map(|(games, _)| games)
+}
+
+/// 可取消的扫描入口。
+///
+/// `should_cancel` 每进一个目录读一次（原子布尔，开销可忽略）。
+/// 取消时**保留已经扫到的结果**：已经读了几千个目录却全丢掉，比不取消还糟。
+pub fn scan_root_cancellable<F>(
+    root: &Path,
+    mut on_progress: F,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<(Vec<ScannedGame>, bool), String>
 where
     F: FnMut(&ScanProgress),
 {
@@ -840,12 +927,13 @@ where
         &mut seen_paths,
         &mut on_progress,
         &mut last_emit,
+        should_cancel,
     );
 
     // 收尾再发一次，前端据此知道结束了
     progress.current.clear();
     on_progress(&progress);
-    Ok(games)
+    Ok((games, should_cancel()))
 }
 
 fn visit<F>(
@@ -856,10 +944,16 @@ fn visit<F>(
     seen: &mut HashSet<String>,
     on_progress: &mut F,
     last_emit: &mut Instant,
+    should_cancel: &dyn Fn() -> bool,
 ) where
     F: FnMut(&ScanProgress),
 {
     if depth > MAX_DEPTH {
+        return;
+    }
+
+    // 取消：递归会一路立刻返回，不会再多读一个目录
+    if should_cancel() {
         return;
     }
 
@@ -880,7 +974,10 @@ fn visit<F>(
     let ev = evaluate(dir, &facts, tool_like);
 
     if ev.is_game {
-        let game = make_game(dir, ev.score);
+        let (game, aborted) = make_game(dir, ev.score, should_cancel);
+        if aborted {
+            return;
+        }
         if seen.insert(game.folder_path.clone()) {
             games.push(game);
             progress.games_found += 1;
@@ -892,15 +989,23 @@ fn visit<F>(
         return;
     }
 
-    if is_container(dir) {
-        let game = make_game(dir, ev.score);
-        if seen.insert(game.folder_path.clone()) {
-            games.push(game);
-            progress.games_found += 1;
-            on_progress(progress);
-            *last_emit = Instant::now();
+    // 合集判定要往下走三层（最多 5000 条），同样可能被取消打断
+    match is_container_cancellable(dir, should_cancel) {
+        None => return,
+        Some(true) => {
+            let (game, aborted) = make_game(dir, ev.score, should_cancel);
+            if aborted {
+                return;
+            }
+            if seen.insert(game.folder_path.clone()) {
+                games.push(game);
+                progress.games_found += 1;
+                on_progress(progress);
+                *last_emit = Instant::now();
+            }
+            return;
         }
-        return;
+        Some(false) => {}
     }
 
     for sub in &facts.subdirs {
@@ -908,7 +1013,7 @@ fn visit<F>(
         if is_skip_dir(&lower) {
             continue;
         }
-        visit(sub, depth + 1, games, progress, seen, on_progress, last_emit);
+        visit(sub, depth + 1, games, progress, seen, on_progress, last_emit, should_cancel);
     }
 }
 
@@ -955,6 +1060,40 @@ mod tests {
     }
 
     /* ---------------------------------------------------------- 基本判定 */
+
+    #[test]
+    fn cancel_keeps_partial_results() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // 两层：根目录下有两个游戏目录
+        let root = temp_root("cancel");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        touch(&root.join("a"), "game.exe");
+        touch(&root.join("a"), "data.xp3");
+        touch(&root.join("b"), "game.exe");
+        touch(&root.join("b"), "data.xp3");
+
+        // 一旦发现第一部游戏就置位取消
+        let flag = AtomicBool::new(false);
+        let (games, cancelled) = scan_root_cancellable(
+            &root,
+            |p| {
+                if p.games_found > 0 {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            },
+            &|| flag.load(Ordering::SeqCst),
+        )
+        .expect("扫描失败");
+
+        assert!(cancelled, "应该报告被取消");
+        assert!(
+            !games.is_empty(),
+            "取消前已经扫到的结果必须保留，否则等于白扫"
+        );
+        assert!(games.len() < 2, "取消后不应继续扫完剩下的目录");
+    }
 
     #[test]
     fn detects_simple_game() {

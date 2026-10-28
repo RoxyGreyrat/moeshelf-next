@@ -109,6 +109,29 @@ pub struct ScanReport {
     pub elapsed_ms: u64,
     /// 新增行的 id（= path_hash）。前端拿它去跑「自动匹配」，不用再全表比对。
     pub inserted_ids: Vec<String>,
+    /// 是不是被用户中途取消的（已扫到的部分照常入库）
+    pub cancelled: bool,
+}
+
+/// 扫描取消开关。
+///
+/// 放在 app 状态里而不是命令参数里：扫描是 `spawn_blocking` 里跑的循环，
+/// 前端只能从另一个命令改这个原子布尔，扫描线程每进一个目录读一次。
+pub struct ScanCancel(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Default for ScanCancel {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+}
+
+/// 取消正在进行的扫描。没有扫描在跑时调用也无害。
+#[tauri::command]
+pub fn cancel_scan(state: State<'_, ScanCancel>) -> bool {
+    state
+        .0
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    true
 }
 
 /// 扫描一个根目录，把识别出的游戏写进库。
@@ -118,20 +141,34 @@ pub struct ScanReport {
 /// 不能跨 `.await` 持有。
 #[tauri::command]
 pub async fn scan_directory(app: AppHandle, root: String) -> Result<ScanReport, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_and_store(&app, &root))
-        .await
-        .map_err(|e| format!("扫描线程异常：{e}"))?
+    // Arc 先克隆出来：State<'_> 不能跨线程，原子布尔可以
+    let cancel = app.state::<ScanCancel>().0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        scan_and_store(&app, &root, &cancel)
+    })
+    .await
+    .map_err(|e| format!("扫描线程异常：{e}"))?
 }
 
-fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
+fn scan_and_store(
+    app: &AppHandle,
+    root: &str,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<ScanReport, String> {
     let started = Instant::now();
 
     let mut dirs_scanned = 0usize;
-    let games = scanner::scan_root(std::path::Path::new(root), |p| {
-        dirs_scanned = p.dirs_scanned;
-        // 发不出去也不影响扫描（窗口可能已经关了）
-        let _ = app.emit(SCAN_PROGRESS_EVENT, p.clone());
-    })?;
+    let cancelled = std::sync::Arc::clone(cancel);
+    let (games, was_cancelled) = scanner::scan_root_cancellable(
+        std::path::Path::new(root),
+        |p| {
+            dirs_scanned = p.dirs_scanned;
+            // 发不出去也不影响扫描（窗口可能已经关了）
+            let _ = app.emit(SCAN_PROGRESS_EVENT, p.clone());
+        },
+        &|| cancelled.load(std::sync::atomic::Ordering::SeqCst),
+    )?;
 
     let db = app.state::<Db>();
     let mut conn = db.0.lock().map_err(|_| "数据库连接被占用".to_string())?;
@@ -164,6 +201,7 @@ fn scan_and_store(app: &AppHandle, root: &str) -> Result<ScanReport, String> {
         updated,
         elapsed_ms: started.elapsed().as_millis() as u64,
         inserted_ids,
+        cancelled: was_cancelled,
     })
 }
 

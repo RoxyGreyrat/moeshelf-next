@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import {
   autoMatchGames,
+  cancelScan,
   deleteGames,
   getGameDetail,
   getScrapeSettings,
@@ -384,8 +385,9 @@ export default function App() {
 
         // 新入库的游戏接着自动匹配资料（设置里可关）。
         // 注意必须在 finally 之前：匹配期间 scanProgress 已经清掉，状态行换成匹配进度。
+        // 被取消的扫描不跑匹配 —— 用户按取消就是想让它停，不该接着联网。
         let matchNote = "";
-        if (report.insertedIds.length > 0) {
+        if (!report.cancelled && report.insertedIds.length > 0) {
           try {
             const settings = await getScrapeSettings();
             if (settings.autoMatch) {
@@ -398,6 +400,12 @@ export default function App() {
         }
 
         const seconds = (report.elapsedMs / 1000).toFixed(1);
+        if (report.cancelled) {
+          toast(`扫描已取消`, {
+            description: `已入库 ${report.inserted} 部 · 更新 ${report.updated} 部 · 取消前看了 ${report.dirsScanned} 个文件夹`,
+          });
+          return;
+        }
         toast.success(
           report.inserted > 0
             ? `扫描完成，新增 ${report.inserted} 部`
@@ -421,8 +429,22 @@ export default function App() {
     [loadRoots, reload, runAutoMatch, scanning],
   );
 
-  /* ------------------------------------------------------ 忽略 / 删除（库维护） */
+  /**
+   * 取消扫描。
+   *
+   * 只置一个标记：Rust 侧每进一个目录检查一次，然后**收尾并把已扫到的写库**，
+   * `scanDirectory` 正常返回（报告里 cancelled=true）。所以这里不用做任何回滚。
+   */
+  const handleCancelScan = useCallback(async () => {
+    try {
+      await cancelScan();
+    } catch (err) {
+      console.error("[cancel_scan]", err);
+      toast.error("取消失败", { description: String(err) });
+    }
+  }, []);
 
+  /* ------------------------------------------------------ 忽略 / 删除（库维护） */
   /** 当前作用对象：多选是选中的全部，单选就是详情里那一部 */
   const targetIds = useCallback(() => {
     if (selectMode === "multi" && selectedIds.length > 0) return selectedIds;
@@ -762,7 +784,7 @@ export default function App() {
               {/* 扫描/匹配中把快捷键提示换成进度：同一行、同一位置，
                   不遮挡封面也不让内容跳动。扫描结束后无缝换成匹配进度。 */}
               {scanProgress ? (
-                <ScanStatus progress={scanProgress} />
+                <ScanStatus progress={scanProgress} onCancel={() => void handleCancelScan()} />
               ) : matchProgress ? (
                 <MatchStatus progress={matchProgress} />
               ) : (

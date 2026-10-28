@@ -62,6 +62,8 @@ pub fn run() {
             }
 
             app.manage(database);
+            // 扫描取消开关：前端点「取消」时置位，扫描线程每个目录读一次
+            app.manage(commands::ScanCancel::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -99,6 +101,7 @@ pub fn run() {
             commands::set_games_ignored,
             commands::delete_games,
             commands::scan_directory,
+            commands::cancel_scan,
             commands::list_scan_roots,
             commands::add_scan_root,
             commands::remove_scan_root,
